@@ -19,6 +19,7 @@ function item(label, on, click) {
   try { await larkSaveDevices(); } catch (e) {}
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const st = await chrome.runtime.sendMessage({ type: 'state', tabId: tab.id });
+  document.getElementById('tab').textContent = tab.title || '';   // какая это вкладка (бывают с одинаковыми названиями)
   const pick = async (deviceId, label) => {
     const res = await chrome.runtime.sendMessage({ type: 'route', tabId: tab.id, deviceId, label });
     if (res && res.ok) window.close();

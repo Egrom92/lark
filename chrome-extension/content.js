@@ -7,6 +7,7 @@
   const root = document.documentElement;
   const setSink = (label) => (label ? root.setAttribute('data-lark-sink', label) : root.removeAttribute('data-lark-sink'));
   root.setAttribute('data-lark-ext', '1');
+  root.removeAttribute('data-lark-sink');   // старая метка от прошлого экземпляра — пока не подтвердит фон
   const setDiag = (d) => d && root.setAttribute('data-lark-diag', d);
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === 'lark-sink') setSink(msg.label);

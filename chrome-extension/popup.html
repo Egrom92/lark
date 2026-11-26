@@ -8,11 +8,12 @@
  li button { width: 100%; text-align: left; border: 0; background: none; color: inherit; font: inherit; padding: 7px 10px; border-radius: 7px; cursor: pointer; display: flex; justify-content: space-between; }
  li button:hover { background: var(--hover); }
  li button.on { background: var(--sel); color: var(--acc); font-weight: 600; }
+ #tab { margin: -2px 14px 6px; color: var(--mute); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
  p { margin: 4px 14px 12px; color: var(--mute); font-size: 11.5px; line-height: 1.4; }
  .err { color: #d33; }
  a { color: var(--acc); }
 </style></head><body>
 <header><img src="icons/32.png" alt=""><span id="title"></span></header>
-<ul id="list"></ul>
+<div id="tab"></div><ul id="list"></ul>
 <p id="hint"></p>
 <script src="devices.js"></script><script src="popup.js"></script></body></html>

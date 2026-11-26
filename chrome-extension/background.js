@@ -37,9 +37,24 @@ async function offscreen(msg) {
 }
 
 // --- Куда выведены вкладки: tabId → { deviceId, label }
+// Правда одна — живой захват в offscreen-документе. Запись без захвата (расширение перезагрузили, Chrome закрыл
+// документ) — устаревшая: она удаляется, а метка на странице снимается, чтобы Lark и окно значка не врали.
 
 async function routes() {
   return (await chrome.storage.session.get('routes')).routes || {};
+}
+
+/** Куда реально выведена вкладка сейчас (или null), с уборкой устаревшей записи. */
+async function liveRoute(tabId) {
+  const r = await routes();
+  if (!r[tabId]) return null;
+  let has = false;
+  try { has = !!((await offscreen({ type: 'has', tabId })) || {}).has; } catch (e) {}
+  if (has) return r[tabId];
+  delete r[tabId];
+  await saveRoutes(r);
+  await tellPage(tabId, '');
+  return null;
 }
 async function saveRoutes(r) {
   await chrome.storage.session.set({ routes: r });
@@ -137,7 +152,15 @@ async function injectIntoOpenTabs() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+/** Захватов после запуска нет: старые записи убрать, метки со страниц снять. */
+async function forgetAllRoutes() {
+  const r = await routes();
+  await saveRoutes({});
+  for (const id of Object.keys(r)) await tellPage(Number(id), '');
+}
+
+chrome.runtime.onInstalled.addListener(async () => {
+  await forgetAllRoutes();
   injectIntoOpenTabs();
   buildMenu();
   // Без разрешения Chrome не называет устройства — сразу показать страницу настройки.
@@ -145,7 +168,7 @@ chrome.runtime.onInstalled.addListener(() => {
     if (!l.length) chrome.tabs.create({ url: 'setup.html' });
   });
 });
-chrome.runtime.onStartup.addListener(() => { injectIntoOpenTabs(); buildMenu(); });
+chrome.runtime.onStartup.addListener(async () => { await forgetAllRoutes(); injectIntoOpenTabs(); buildMenu(); });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab || tab.id === undefined) return;
@@ -175,12 +198,12 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       return reply(await route(sender.tab.id, d.deviceId, d.label));
     }
     if (msg.type === 'state') {
-      const r = await routes();
-      return reply({ devices: await devices(), current: r[msg.tabId] ? r[msg.tabId].deviceId : 'default' });
+      const live = await liveRoute(msg.tabId);
+      return reply({ devices: await devices(), current: live ? live.deviceId : 'default' });
     }
     if (msg.type === 'mySink') {   // content.js после загрузки страницы: куда выведена эта вкладка
-      const r = sender.tab ? (await routes())[sender.tab.id] : null;
-      return reply({ label: r ? r.label : '', diag: await diagText() });
+      const live = sender.tab ? await liveRoute(sender.tab.id) : null;
+      return reply({ label: live ? live.label : '', diag: await diagText() });
     }
     if (msg.type === 'devicesChanged' || msg.type === 'permissionGranted') {
       await buildMenu();
@@ -190,6 +213,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       const r = await routes();
       delete r[msg.tabId];
       await saveRoutes(r);
+      await tellPage(msg.tabId, '');
       return reply({ ok: true });
     }
     reply({ ok: false });
