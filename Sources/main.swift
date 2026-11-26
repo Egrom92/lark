@@ -362,21 +362,22 @@ enum MediaProbe {
     /// Всё, что играет: треки плееров, вкладки браузеров, остальные программы со звуком.
     static func collect(muted: Set<String>, gains: [String: Double] = [:], running: Set<String>)
         -> (items: [MediaItem], hints: [Hint], sound: [(app: SoundApp, objs: [AudioObjectID])]) {
-        var items: [MediaItem] = [], hints: [Hint] = []
+        var items: [MediaItem] = [], hints: [Hint] = [], covered: Set<String> = []
         for p in Media.players where running.contains(p.bundle) {
             let r = OSA.run(Media.playerScript(p.bundle))
             if Media.notPermitted(r.err) { hints.append(Media.deniedHint(p.name)); continue }
-            if let item = Media.parsePlayer(r.out, bundle: p.bundle, name: p.name) { items.append(item) }
+            if let item = Media.parsePlayer(r.out, bundle: p.bundle, name: p.name) { items.append(item); covered.insert(p.bundle) }
         }
         for b in Media.browsers where running.contains(b.bundle) {
             let r = OSA.run(Media.probeScript(b))
             if Media.notPermitted(r.err) { hints.append(Media.deniedHint(b.name)); continue }
             let parsed = Media.parseTabs(r.out, b)
             items += parsed.items
+            if parsed.answered > 0 { covered.insert(b.bundle) }   // вкладки видны — общая строка браузера не нужна
             if parsed.jsOff { hints.append(Media.jsHint(b)) }
         }
         let sound = SoundApps.list()
-        var extra = soundItems(sound.map(\.app), detailed: items, muted: muted, gains: gains,
+        var extra = soundItems(sound.map(\.app), detailed: items, covered: covered, muted: muted, gains: gains,
                                me: Bundle.main.bundleIdentifier ?? "local.lark")
         for i in extra.indices where extra[i].title == extra[i].appBundle {   // программа закрылась — имя по бандлу
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: extra[i].appBundle) {
@@ -386,7 +387,7 @@ enum MediaProbe {
                                      subtitle: e.subtitle, playing: e.playing, muted: e.muted, volume: e.volume)
             }
         }
-        return (playingFirst(items + extra), hints, sound)
+        return (items + extra, hints, sound)
     }
 
     static func perform(_ item: MediaItem, _ a: MediaAction) { _ = OSA.run(Media.actionScript(item, a)) }
@@ -410,6 +411,7 @@ final class MediaModel: ObservableObject {
     private var soundObjs: [String: [AudioObjectID]] = [:]
     private var tapHint: Hint?
     private var volumeSends: [String: DispatchWorkItem] = [:]
+    private var order = StableOrder()               // строки не прыгают при play/pause
     var onReveal: () -> Void = {}
 
     func start() {
@@ -432,7 +434,7 @@ final class MediaModel: ObservableObject {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     if gen == self.generation {
-                        self.items = r.items
+                        self.items = self.order.sort(r.items)
                         self.hints = r.hints + (self.tapHint.map { [$0] } ?? [])
                         for s in r.sound { self.soundObjs[s.app.bundle] = s.objs }
                         self.loaded = true
@@ -1222,6 +1224,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     let t0 = Date()
                     let o = OSA.run(Media.probeScript(b))
                     let tail = o.out.components(separatedBy: "\n").last ?? ""
+                    if CommandLine.arguments.contains("--tabs"), !b.isSafari {   // каждая вкладка с медиа: состояние роликов
+                        let dbg = "(function(){try{var v=[].slice.call(document.querySelectorAll('video,audio'));if(!v.length)return '';var r=" + Media.probeJS + ";return location.hostname+' n='+v.length+' '+v.map(function(x){return (x.paused?'P':'p')+(x.muted?'M':'m')+x.volume+'/rs'+x.readyState+'/t'+Math.round(x.currentTime)+'/d'+Math.round(x.duration)+'/src'+((x.currentSrc||'').slice(0,5))}).join(',')+' => '+(r===''?'EMPTY':r.slice(0,1))}catch(err){return 'ERR '+err.message}})()"
+                        let d = OSA.run("tell application id \"\(b.bundle)\"\nset out to \"\"\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset r to execute t javascript \"\(dbg)\"\nif r is not missing value and r is not \"\" then set out to out & (title of t) & \" :: \" & r & linefeed\non error e\nset out to out & (title of t) & \" :: ERROR \" & e & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell")
+                        lines.append("🐞\n" + d.out + d.err)
+                    }
                     lines.append("🔎 \(b.name) за \(String(format: "%.1f", Date().timeIntervalSince(t0))) с: \(tail.replacingOccurrences(of: Media.sep, with: " | "))\(o.err.isEmpty ? "" : " | " + o.err)")
                 }
                 print(lines.isEmpty ? "Ничего не играет" : lines.joined(separator: "\n"))

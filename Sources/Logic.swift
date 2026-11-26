@@ -199,16 +199,15 @@ struct Browser: Equatable {
     var isSafari: Bool { bundle == Media.safari }
 }
 
-/// Играющее — сверху; внутри групп порядок не меняется, чтобы строки не прыгали при обновлении.
-func playingFirst(_ items: [MediaItem]) -> [MediaItem] {
-    items.filter(\.playing) + items.filter { !$0.playing }
-}
 
 /// Строки «программа издаёт звук» для тех, кого Lark не умеет ставить на паузу по-своему (Telegram, Zoom, Teams, игры).
-/// Программа не дублируется, если по ней уже есть играющая строка (вкладка, трек). Выключенные или приглушённые Lark-ом
+/// covered — программы, которые Lark уже показывает по-своему: плеер со своей строкой или браузер, чьи вкладки удалось
+/// опросить. Для них общей строки нет: Chrome после паузы ещё долго держит звуковой поток открытым, и macOS считает,
+/// что он «играет», — вышла бы непонятная строка «Google Chrome — играет звук». Выключенные или приглушённые Lark-ом
 /// видны всегда, иначе звук нельзя было бы вернуть.
-func soundItems(_ apps: [SoundApp], detailed: [MediaItem], muted: Set<String>, gains: [String: Double] = [:], me: String) -> [MediaItem] {
-    let busy = Set(detailed.filter(\.playing).map(\.appBundle))
+func soundItems(_ apps: [SoundApp], detailed: [MediaItem], covered: Set<String> = [], muted: Set<String>, gains: [String: Double] = [:],
+                me: String) -> [MediaItem] {
+    let busy = Set(detailed.filter(\.playing).map(\.appBundle)).union(covered)
     let touched = muted.union(gains.filter { $0.value != 1 }.keys)
     var seen = Set<String>(), out: [MediaItem] = []
     func make(_ b: String, _ name: String, outputting: Bool) -> MediaItem {
@@ -452,12 +451,14 @@ enum Media {
     }
 
     /// Строки вкладок → записи. jsOff: ни одна вкладка не ответила, и ошибка про JavaScript (выключен в браузере).
-    static func parseTabs(_ out: String, _ b: Browser, at now: Date = Date()) -> (items: [MediaItem], jsOff: Bool) {
-        var items: [MediaItem] = [], jsOff = false
+    /// answered: сколько вкладок ответило — больше нуля значит, вкладки браузера Lark видит.
+    static func parseTabs(_ out: String, _ b: Browser, at now: Date = Date()) -> (items: [MediaItem], jsOff: Bool, answered: Int) {
+        var items: [MediaItem] = [], jsOff = false, answered = 0
         for line in out.components(separatedBy: "\n") {
             if line.hasPrefix("!") {
                 let f = line.dropFirst().components(separatedBy: sep)
-                jsOff = f.first == "0" && f.count > 1 && f[1].contains("JavaScript")
+                answered = Int(f.first ?? "") ?? 0
+                jsOff = answered == 0 && f.count > 1 && f[1].contains("JavaScript")
                 continue
             }
             let f = line.components(separatedBy: sep)
@@ -476,6 +477,17 @@ enum Media {
             item.fetchedAt = now
             items.append(item)
         }
-        return (items, jsOff)
+        return (items, jsOff, max(answered, items.isEmpty ? 0 : 1))
+    }
+}
+
+/// Постоянный порядок строк: место строки — когда она впервые появилась. Играет или на паузе — строка не прыгает.
+struct StableOrder {
+    private var rank: [String: Int] = [:]
+    private var next = 0
+
+    mutating func sort(_ items: [MediaItem]) -> [MediaItem] {
+        for it in items where rank[it.id] == nil { rank[it.id] = next; next += 1 }
+        return items.enumerated().sorted { (rank[$0.element.id] ?? 0, $0.offset) < (rank[$1.element.id] ?? 0, $1.offset) }.map(\.element)
     }
 }

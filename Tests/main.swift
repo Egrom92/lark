@@ -37,8 +37,11 @@ eq(symbol(for: Device(id: 1, uid: "x", name: "Mac", transport: kAudioDeviceTrans
 func item(_ id: String, _ playing: Bool, bundle: String = "b") -> MediaItem {
     MediaItem(id: id, source: .player(bundle: bundle), appBundle: bundle, appName: "", title: id, subtitle: "", playing: playing)
 }
-eq(playingFirst([item("1", false), item("2", true), item("3", false), item("4", true)]).map(\.id), ["2", "4", "1", "3"],
-   "играющее сверху, порядок внутри групп сохранён")
+var order = StableOrder()
+eq(order.sort([item("1", false), item("2", true), item("3", false)]).map(\.id), ["1", "2", "3"], "порядок — как пришли")
+eq(order.sort([item("3", true), item("1", true), item("2", false)]).map(\.id), ["1", "2", "3"], "play/pause не двигает строки")
+eq(order.sort([item("4", true), item("2", false), item("1", false)]).map(\.id), ["1", "2", "4"], "новая строка — в конец, пропавшая — убрана")
+eq(order.sort([item("3", false), item("1", false)]).map(\.id), ["1", "3"], "вернувшаяся строка — на своё место")
 
 // MARK: - Разбор ответа плеера
 
@@ -108,6 +111,8 @@ eq(Media.parseTabs("!0\(F)Executing JavaScript through AppleScript is turned off
 eq(Media.parseTabs("!0\(F)Вы должны включить «Разрешить JavaScript из Apple Events»", safari).jsOff, true, "JS выключен в Safari (по-русски)")
 eq(Media.parseTabs("!4\(F)JavaScript error in one tab", chrome).jsOff, false, "часть вкладок ответила — подсказка не нужна")
 eq(Media.parseTabs("!0\(F)", chrome).jsOff, false, "нет вкладок — подсказка не нужна")
+eq(Media.parseTabs("!16\(F)", chrome).answered, 16, "сколько вкладок ответило")
+eq(Media.parseTabs("!0\(F)Executing JavaScript through AppleScript is turned off.", chrome).answered, 0, "JS выключен — ни одна не ответила")
 check(Media.jsHint(safari).text.contains("Разработка"), "подсказка Safari ведёт в меню «Разработка»")
 check(Media.jsHint(chrome).text.contains("Вид → Разработчик"), "подсказка Chrome ведёт в «Вид → Разработчик»")
 check(Media.notPermitted("execution error: Not authorized to send Apple events to Spotify. (-1743)"), "отказ в доступе")
@@ -129,6 +134,10 @@ check(si.first?.isSoundOnly == true && si.first?.playing == true && si.first?.mu
 si = soundItems(apps, detailed: [MediaItem(id: "t", source: playingTab.source, appBundle: "com.google.Chrome", appName: "", title: "",
                                            subtitle: "", playing: false)], muted: [], me: "local.lark")
 eq(si.map(\.appBundle), ["org.telegram", "com.google.Chrome"], "вкладка на паузе, а Chrome звучит (например, JS выключен) — показать Chrome")
+si = soundItems(apps, detailed: [], covered: ["com.google.Chrome"], muted: [], me: "local.lark")
+eq(si.map(\.appBundle), ["org.telegram"], "вкладки Chrome видны — общей строки «Google Chrome» нет (после паузы поток ещё открыт)")
+si = soundItems(apps, detailed: [], covered: ["com.google.Chrome"], muted: ["com.google.Chrome"], me: "local.lark")
+check(si.contains { $0.appBundle == "com.google.Chrome" }, "но если звук Chrome выключен в Lark — строка есть, чтобы вернуть")
 si = soundItems(apps, detailed: [], muted: ["net.whatsapp", "com.gone"], me: "local.lark")
 eq(si.map(\.appBundle), ["org.telegram", "com.google.Chrome", "net.whatsapp", "com.gone"], "выключенные видны всегда")
 check(si[2].muted && !si[2].playing && si[2].subtitle.contains("выключен"), "выключенная программа помечена")
