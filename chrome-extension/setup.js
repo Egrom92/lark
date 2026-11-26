@@ -10,6 +10,7 @@ btn.onclick = async () => {
   try {
     const s = await navigator.mediaDevices.getUserMedia({ audio: true });
     s.getTracks().forEach((tr) => tr.stop());
+    await larkSaveDevices();
     await chrome.runtime.sendMessage({ type: 'permissionGranted' });
     msg.textContent = t('setupDone');
     btn.hidden = true;
@@ -17,3 +18,10 @@ btn.onclick = async () => {
     msg.textContent = t('setupFailed');
   }
 };
+
+// Разрешение уже есть — сразу обновить список устройств (на случай, если невидимый документ их не видит)
+navigator.permissions.query({ name: 'microphone' }).then(async (p) => {
+  if (p.state !== 'granted') return;
+  const list = await larkSaveDevices();
+  if (list.length) { msg.textContent = t('setupDone'); btn.hidden = true; }
+});

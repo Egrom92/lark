@@ -4,11 +4,16 @@
 const tabs = new Map(); // tabId → { stream, ctx }
 
 async function deviceList() {
+  return larkDevices();
+}
+
+/** Что видит невидимый документ — для диагностики в Lark. */
+async function diag() {
+  let perm = '?';
+  try { perm = (await navigator.permissions.query({ name: 'microphone' })).state; } catch (e) { perm = 'err'; }
   const all = await navigator.mediaDevices.enumerateDevices();
-  // Без разрешения у устройств пустые названия — тогда списка нет (покажем «Разрешить…»)
-  return all
-    .filter((d) => d.kind === 'audiooutput' && d.label && d.deviceId !== 'default' && d.deviceId !== 'communications')
-    .map((d) => ({ deviceId: d.deviceId, label: d.label.replace(/\s*\((Built-in|Bluetooth|Virtual)\)\s*$/i, '') }));
+  const outs = all.filter((d) => d.kind === 'audiooutput');
+  return `perm=${perm} outputs=${outs.length} named=${outs.filter((d) => d.label).length}`;
 }
 
 function stop(tabId) {
@@ -45,6 +50,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   (async () => {
     try {
       if (msg.type === 'devices') return reply({ devices: await deviceList() });
+      if (msg.type === 'diag') return reply({ text: await diag() });
       if (msg.type === 'has') return reply({ has: tabs.has(msg.tabId) });
       if (msg.type === 'stop') { stop(msg.tabId); return reply({ ok: true }); }
       if (msg.type === 'sink') {

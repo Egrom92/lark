@@ -214,6 +214,8 @@ eq(outerAppPath("/usr/sbin/coreaudiod"), nil, "служба без .app")
 
 // MARK: - Скрипты
 
+check(!Media.tabSinkJS("Динамики MacBook Air").contains("\"") && !Media.tabSinkJS("It's \"odd\" \\").contains("\\"), "просьба вкладке без кавычек и слэшей")
+check(Media.tabSinkJS("HK GO + PLAY").contains("HK%20GO%20%2B%20PLAY"), "название устройства в процентной записи")
 let actions: [MediaAction] = [.play, .pause, .seek(42.5), .skip(-10), .skip(10), .next, .previous, .volume(0.37), .volume(2)]
 for js in [Media.probeJS, Media.pauseJS, Media.playJS] + actions.map(Media.tabJS) {
     check(!js.contains("\"") && !js.contains("\\"), "в JS нет двойных кавычек и обратных слэшей (он внутри строки AppleScript)")

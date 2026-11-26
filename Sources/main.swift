@@ -547,6 +547,33 @@ final class MediaModel: ObservableObject {
 
     func route(_ b: String) -> String? { routes[b] }
 
+    /// Вывести одну вкладку в устройство через «Lark для Chrome». Если Chrome ещё не разрешил (вкладку ни разу
+    /// не выводили через расширение) — подсказка выбрать один раз в самом Chrome.
+    func setTabSink(_ item: MediaItem, _ deviceName: String?) {
+        update(item.id) { $0.sinkName = deviceName }
+        generation += 1
+        queue.async {
+            _ = OSA.run(Media.tabSinkScript(item, deviceName ?? "default"))
+            Thread.sleep(forTimeInterval: 0.6)
+            let err = OSA.run(Media.tabErrorScript(item)).out
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if !err.isEmpty {
+                        let h = Hint(id: "tabsink", text: tr("Эту вкладку Chrome пока не даёт перевести из Lark: один раз выберите устройство в самом Chrome — правый щелчок по странице → «Lark: звук этой вкладки». Дальше можно отсюда.",
+                                                             "Chrome doesn’t let Lark move this tab yet: choose the device once in Chrome itself — right-click the page → Lark: this tab’s sound. After that, you can do it from here.",
+                                                             "Chrome ei luba seda vahekaarti veel Larkist suunata: valige seade üks kord Chrome’is — paremklõps lehel → „Lark: selle vahekaardi heli“. Edaspidi saab siit."),
+                                     openPrivacy: false)
+                        self.hints.removeAll { $0.id == "tabsink" }
+                        self.hints.append(h)
+                    } else {
+                        self.hints.removeAll { $0.id == "tabsink" }
+                    }
+                    self.refresh()
+                }
+            }
+        }
+    }
+
     /// Звуковые процессы изменились (программа запустилась, заиграла, закрылась) или сменились устройства:
     /// обновить список процессов и применить сохранённые маршруты — даже когда панель закрыта.
     func reconcile() {
@@ -1113,34 +1140,43 @@ struct MediaRow: View {
                 Button(tr("Назад на 10 секунд", "Back 10 seconds", "10 sekundit tagasi")) { media.perform(item, .skip(-10)) }
             }
             Divider()
-            RouteMenuItems(item: item, media: media)
+            Menu(tr("Куда выводить звук", "Sound output", "Heli väljund")) { RouteMenuItems(item: item, media: media) }
             Divider()
             Button(tr("Открыть", "Open", "Ava")) { media.reveal(item) }
         }
     }
 }
 
-/// Пункты «Куда выводить звук»: программа целиком — через Lark; отдельная вкладка — через расширение в Chrome.
+/// Пункты «Куда выводить звук». Вкладка с «Lark для Chrome» — своим разделом (только эта вкладка), ниже — весь браузер.
+/// Программа — сразу списком устройств.
 struct RouteMenuItems: View {
     let item: MediaItem
     @ObservedObject var media: MediaModel
 
-    var body: some View {
-        let current = media.route(item.appBundle)
-        let whole = item.isTab ? tr("Весь \(item.appName)", "All of \(item.appName)", "Kogu \(item.appName)") : item.appName
-        Menu(tr("Куда выводить: \(whole)", "Output for \(whole)", "Väljund: \(whole)")) {
-            Button((current == nil ? "✓ " : "") + tr("Как у всех", "Same as everything", "Nagu kõik")) { media.setRoute(item.appBundle, nil) }
-            Divider()
-            ForEach(media.outputs, id: \.uid) { d in
-                Button((current == d.uid ? "✓ " : "") + d.name) { media.setRoute(item.appBundle, d.uid) }
-            }
+    @ViewBuilder private func deviceList(current: String?, pick: @escaping (Device?) -> Void, matchByName: Bool) -> some View {
+        Button((current == nil ? "✓ " : "") + tr("Как у всех", "Same as everything", "Nagu kõik")) { pick(nil) }
+        ForEach(media.outputs, id: \.uid) { d in
+            let on = matchByName ? current == d.name : current == d.uid
+            Button((on ? "✓ " : "") + d.name) { pick(d) }
         }
+    }
+
+    var body: some View {
         if item.isTab {
-            Button(item.hasExtension
-                   ? tr("Только эта вкладка: правый щелчок по странице → Lark", "Only this tab: right-click the page → Lark", "Ainult see vahekaart: paremklõps lehel → Lark")
-                   : tr("Только эта вкладка: поставить «Lark для Chrome»…", "Only this tab: install Lark for Chrome…", "Ainult see vahekaart: paigalda „Lark Chrome’ile“…")) {
-                if item.hasExtension { media.reveal(item) } else { ChromeExtension.openInstall() }
+            if item.hasExtension {
+                Section(tr("Только эта вкладка", "Only this tab", "Ainult see vahekaart")) {
+                    deviceList(current: item.sinkName, pick: { media.setTabSink(item, $0?.name) }, matchByName: true)
+                }
+            } else {
+                Button(tr("Только эта вкладка: поставить «Lark для Chrome»…", "Only this tab: install Lark for Chrome…",
+                          "Ainult see vahekaart: paigalda „Lark Chrome’ile“…")) { ChromeExtension.openInstall() }
             }
+            Divider()
+            Menu(tr("Весь \(item.appName)", "All of \(item.appName)", "Kogu \(item.appName)")) {
+                deviceList(current: media.route(item.appBundle), pick: { media.setRoute(item.appBundle, $0?.uid) }, matchByName: false)
+            }
+        } else {
+            deviceList(current: media.route(item.appBundle), pick: { media.setRoute(item.appBundle, $0?.uid) }, matchByName: false)
         }
     }
 }
@@ -1355,6 +1391,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     let t0 = Date()
                     let o = OSA.run(Media.probeScript(b))
                     let tail = o.out.components(separatedBy: "\n").last ?? ""
+                    if CommandLine.arguments.contains("--ext"), !b.isSafari {   // метки «Lark для Chrome» на вкладках
+                        let js = "(document.documentElement.getAttribute('data-lark-ext')||'-')+'|'+(document.documentElement.getAttribute('data-lark-sink')||'')+'|'+document.querySelectorAll('video,audio').length+'|'+(document.documentElement.getAttribute('data-lark-diag')||'')"
+                        let d = OSA.run("tell application id \"\(b.bundle)\"\nset out to \"\"\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset out to out & (execute t javascript \"\(js)\") & \" :: \" & (title of t) & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell")
+                        lines.append("🧩\n" + d.out + d.err)
+                    }
                     if CommandLine.arguments.contains("--tabs"), !b.isSafari {   // каждая вкладка с медиа: состояние роликов
                         let dbg = "(function(){try{var v=[].slice.call(document.querySelectorAll('video,audio'));if(!v.length)return '';var r=" + Media.probeJS + ";return location.hostname+' n='+v.length+' '+v.map(function(x){return (x.paused?'P':'p')+(x.muted?'M':'m')+x.volume+'/rs'+x.readyState+'/t'+Math.round(x.currentTime)+'/d'+Math.round(x.duration)+'/src'+((x.currentSrc||'').slice(0,5))}).join(',')+' => '+(r===''?'EMPTY':r.slice(0,1))}catch(err){return 'ERR '+err.message}})()"
                         let d = OSA.run("tell application id \"\(b.bundle)\"\nset out to \"\"\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset r to execute t javascript \"\(dbg)\"\nif r is not missing value and r is not \"\" then set out to out & (title of t) & \" :: \" & r & linefeed\non error e\nset out to out & (title of t) & \" :: ERROR \" & e & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell")

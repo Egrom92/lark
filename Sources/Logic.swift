@@ -399,6 +399,30 @@ enum Media {
 
     static func setPlayingScript(_ item: MediaItem, _ play: Bool) -> String { actionScript(item, play ? .play : .pause) }
 
+    /// Попросить «Lark для Chrome» вывести вкладку в устройство (по названию; "default" — как у всех).
+    /// Название — в процентной записи: в строке AppleScript не должно быть кавычек и обратных слэшей.
+    static func tabSinkJS(_ deviceName: String) -> String {
+        let enc = deviceName.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        return "(function(){document.documentElement.removeAttribute('data-lark-error');document.documentElement.setAttribute('data-lark-want','\(enc)');return ''})()"
+    }
+
+    static func tabSinkScript(_ item: MediaItem, _ deviceName: String) -> String {
+        let js = tabSinkJS(deviceName)
+        switch item.source {
+        case .chromeTab(let b, let w, let t): return "tell application id \"\(b)\" to execute tab id \(t) of window id \(w) javascript \"\(js)\""
+        default: return ""
+        }
+    }
+
+    /// Ответ расширения после просьбы: ошибка (пусто — всё хорошо).
+    static func tabErrorScript(_ item: MediaItem) -> String {
+        let js = "(document.documentElement.getAttribute('data-lark-error')||'')"
+        switch item.source {
+        case .chromeTab(let b, let w, let t): return "tell application id \"\(b)\" to execute tab id \(t) of window id \(w) javascript \"\(js)\""
+        default: return ""
+        }
+    }
+
     static func revealScript(_ item: MediaItem) -> String {
         switch item.source {
         case .player(let b), .sound(let b):

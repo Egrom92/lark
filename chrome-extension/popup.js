@@ -16,6 +16,7 @@ function item(label, on, click) {
 }
 
 (async () => {
+  try { await larkSaveDevices(); } catch (e) {}
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const st = await chrome.runtime.sendMessage({ type: 'state', tabId: tab.id });
   const pick = async (deviceId, label) => {
