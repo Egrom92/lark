@@ -117,6 +117,22 @@ enum Routes {
     static func needsTap(muted: Bool, gain: Double, target: String?) -> Bool { muted || gain < 0.999 || target != nil }
 }
 
+// MARK: - Метка «куда выведена вкладка»
+
+/// Расширение «Lark для Chrome» пишет на страницу не название устройства (его прочитал бы любой сайт, а в названии
+/// часто имя владельца: «AirPods Pro (Roman)»), а короткий ключ от названия. Тот же расчёт — в content.js.
+func sinkKey(_ name: String) -> String {
+    var h: UInt32 = 2166136261   // FNV-1a по единицам UTF-16, как charCodeAt в JavaScript
+    for u in name.utf16 { h = (h ^ UInt32(u)) &* 16777619 }
+    return "#" + String(h, radix: 16)
+}
+
+/// Ключ со страницы → название подключённого выхода. Старое расширение писало само название — его тоже понимаем.
+/// Неизвестный ключ (устройство уже отключено) — nil.
+func resolveSink(_ key: String, _ names: [String]) -> String? {
+    names.first { sinkKey($0) == key } ?? (key.hasPrefix("#") ? nil : key)
+}
+
 // MARK: - Версии и время
 
 /// «2.10» новее «2.9»: сравнение по числам через точку.
@@ -313,6 +329,7 @@ enum Media {
     static func playerScript(_ bundle: String) -> String {
         let art = bundle == spotify ? "\n        try\n            set art to artwork url of current track\n        end try" : ""
         return """
+        if application id "\(bundle)" is not running then return ""
         set sep to character id 31
         tell application id "\(bundle)"
             set s to player state as text
@@ -345,6 +362,7 @@ enum Media {
         let run = b.isSafari ? "do JavaScript \"\(probeJS)\" in t" : "execute t javascript \"\(probeJS)\""
         let tabKey = b.isSafari ? "(i as text)" : "((id of t) as text)"
         return """
+        if application id "\(b.bundle)" is not running then return ""
         set sep to character id 31
         set out to ""
         set lastErr to ""

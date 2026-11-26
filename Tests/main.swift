@@ -250,6 +250,18 @@ check(Media.actionScript(item("p", true, bundle: Media.spotify), .volume(2)).has
 check(Media.actionScript(item("p", true, bundle: Media.spotify), .seek(-5)).hasSuffix("to 0.00"), "перемотка не раньше начала")
 check(Media.playerScript(Media.spotify).contains("artwork url"), "обложку спрашиваем только у Spotify")
 check(!Media.playerScript("com.apple.Music").contains("artwork url"), "у Музыки такого свойства нет")
+check(Media.playerScript(Media.spotify).hasPrefix("if application id \"com.spotify.client\" is not running then return"),
+      "опрос не запускает закрытый плеер")
+check(Media.probeScript(Media.browsers[0]).hasPrefix("if application id \"com.google.Chrome\" is not running then return"),
+      "опрос не запускает закрытый браузер")
+
+// MARK: - Метка «куда выведена вкладка»: ключ вместо названия (такой же расчёт в chrome-extension/content.js)
+eq(sinkKey("AirPods Pro (Roman)"), "#f9f63474", "ключ устройства совпадает с расширением")
+eq(sinkKey("Динамики MacBook Air"), "#9ebc6d38", "ключ для кириллицы совпадает с расширением")
+eq(sinkKey("JBL Flip 6"), "#1be2478", "ключ без ведущих нулей, как toString(16)")
+eq(resolveSink("#1be2478", ["AirPods Pro", "JBL Flip 6"]), "JBL Flip 6", "ключ → подключённое устройство")
+eq(resolveSink("#1be2478", ["AirPods Pro"]), nil, "устройство отключено — подписи нет")
+eq(resolveSink("JBL Flip 6", ["AirPods Pro"]), "JBL Flip 6", "старое расширение пишет название — показываем как есть")
 
 // MARK: - JavaScript в настоящем WebKit
 

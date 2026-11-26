@@ -54,7 +54,9 @@ enum Audio {
             guard hasStreams(id, dir), let uid = string(id, kAudioDevicePropertyDeviceUID) else { return nil }
             // Служебные устройства, которые macOS не показывает в своих настройках
             if uid.hasPrefix("CADefaultDeviceAggregate") { return nil }
-            let name = string(id, kAudioObjectPropertyName) ?? "Без названия"
+            // Своё устройство перехвата звука программ («Lark volume»): его видит только сам Lark, в списках ему не место
+            if uid.hasPrefix(AppVolume.uidPrefix) { return nil }
+            let name = string(id, kAudioObjectPropertyName) ?? tr("Без названия", "Untitled", "Nimetu")
             return Device(id: id, uid: uid, name: name, transport: uint32(id, kAudioDevicePropertyTransportType))
         }
     }
@@ -109,11 +111,12 @@ final class Keeper {
 
     init() {
         defaults.register(defaults: [Dir.input.keepKey: true, Dir.output.keepKey: false])
-        // Первый запуск: закрепить встроенный микрофон Mac, если он есть.
+        // Первый запуск: закрепить микрофон, выбранный сейчас (не переключать человека молча на другой);
+        // если его не определить — встроенный.
         if defaults.string(forKey: Dir.input.pinKey) == nil {
             let inputs = Audio.devices(.input)
-            let pick = inputs.first { $0.transport == kAudioDeviceTransportTypeBuiltIn }
-                ?? inputs.first { $0.id == Audio.defaultDevice(.input) }
+            let pick = inputs.first { $0.id == Audio.defaultDevice(.input) }
+                ?? inputs.first { $0.transport == kAudioDeviceTransportTypeBuiltIn }
             if let p = pick { defaults.set(p.uid, forKey: Dir.input.pinKey) }
         }
         if defaults.string(forKey: Dir.output.pinKey) == nil,
@@ -195,6 +198,13 @@ final class AudioModel: ObservableObject {
         }
     }
 
+    /// Громкость могли сменить клавишами или в настройках macOS, пока панель открыта, — подтянуть ползунки.
+    func syncVolumes() {
+        let o = Audio.volume(curOut, .output), i = Audio.volume(curIn, .input)
+        if o != outVol { outVol = o }
+        if i != inVol { inVol = i }
+    }
+
     func all(_ dir: Dir) -> [Device] { dir == .output ? outputs : inputs }
     func current(_ dir: Dir) -> AudioDeviceID { dir == .output ? curOut : curIn }
     func currentDevice(_ dir: Dir) -> Device? { all(dir).first { $0.id == current(dir) } }
@@ -260,6 +270,13 @@ final class AudioModel: ObservableObject {
         let o = currentDevice(.output), i = currentDevice(.input)
         presets[k].output = o?.uid; presets[k].outputName = o?.name
         presets[k].input = i?.uid; presets[k].inputName = i?.name
+        savePresets()
+    }
+
+    func renamePreset(_ p: Preset, _ name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, let k = presets.firstIndex(where: { $0.id == p.id }) else { return }
+        presets[k].name = n
         savePresets()
     }
 
@@ -540,7 +557,8 @@ final class MediaModel: ObservableObject {
         routes[b] = uid
         UserDefaults.standard.set(routes, forKey: Routes.key)
         if !applyTap(b) { routes[b] = nil; UserDefaults.standard.set(routes, forKey: Routes.key) }
-        let name = uid.flatMap { u in outputs.first { $0.uid == u }?.name }
+        let live = Routes.target(routes[b], outputs: outputs, defaultUID: defaultOutputUID)
+        let name = live.flatMap { u in outputs.first { $0.uid == u }?.name }
         for i in items.indices where items[i].appBundle == b { items[i].routeName = name }
         generation += 1
     }
@@ -585,6 +603,7 @@ final class MediaModel: ObservableObject {
     private func labelRoutes(_ list: [MediaItem]) -> [MediaItem] {
         list.map { it in
             var x = it
+            if let key = it.sinkName { x.sinkName = resolveSink(key, outputs.map(\.name)) }
             if let uid = Routes.target(routes[it.appBundle], outputs: outputs, defaultUID: defaultOutputUID) {
                 x.routeName = outputs.first { $0.uid == uid }?.name
             }
@@ -622,6 +641,14 @@ final class MediaModel: ObservableObject {
         for b in list { applyTap(b) }
     }
 
+    /// Список выходов сменился (подключили или отключили устройство) — пересобрать перехваты. Если список тот же,
+    /// ничего не делаем: создание самого перехвата тоже меняет список устройств macOS, и пересборка шла бы по кругу.
+    func setOutputs(_ new: [Device]) {
+        guard new != outputs else { return }
+        outputs = new
+        rebuildTaps()
+    }
+
     func unmuteAll() { for t in taps.values { t.stop() }; taps.removeAll(); muted.removeAll(); gains.removeAll() }
 
     /// Пауза (или «без звука») на всём остальном, играет только это.
@@ -635,7 +662,10 @@ final class MediaModel: ObservableObject {
     func pauseAll() {
         let playing = items.filter(\.playing)
         if playing.isEmpty {
-            for p in pausedByAll { p.isSoundOnly ? toggleMute(p) : perform(p, .play) }
+            for p in pausedByAll {   // только то, что до сих пор стоит: включённое вручную не трогаем
+                guard let cur = items.first(where: { $0.id == p.id }) else { continue }
+                if cur.isSoundOnly { if cur.muted { toggleMute(cur) } } else if !cur.playing { perform(cur, .play) }
+            }
             pausedByAll = []
             return
         }
@@ -778,7 +808,31 @@ final class Images: ObservableObject {
         if url.path.contains("icon"), let host = url.host, url.path != "/favicon.ico", let fb = URL(string: "https://\(host)/favicon.ico") {
             tries.append(fb)
         }
-        Self.fetch(tries) { img in Images.shared.images[s] = img }
+        Self.fetch(tries) { img in Images.shared.store(s, img) }
+    }
+
+    /// Хранить уменьшенную копию (строке нужно 38 точек, а превью видео бывает на несколько мегабайт) и не копить без конца.
+    private func store(_ key: String, _ img: NSImage) {
+        if images.count >= 300 { images.removeAll(); requested.removeAll() }
+        requested.insert(key)
+        images[key] = Self.small(img)
+    }
+
+    private static func small(_ img: NSImage, side: CGFloat = 160) -> NSImage {
+        let s = img.size, k = side / max(s.width, s.height, 1)
+        guard k < 1 else { return img }
+        let w = max(1, Int((s.width * k).rounded())), h = max(1, Int((s.height * k).rounded()))
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return img }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = ctx
+        ctx.imageInterpolation = .high
+        img.draw(in: NSRect(x: 0, y: 0, width: w, height: h))
+        NSGraphicsContext.restoreGraphicsState()
+        let out = NSImage(size: NSSize(width: w, height: h))
+        out.addRepresentation(rep)
+        return out
     }
 
     nonisolated private static func fetch(_ urls: [URL], _ done: @escaping @MainActor (NSImage) -> Void) {
@@ -787,7 +841,7 @@ final class Images: ObservableObject {
         req.setValue("Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: req) { data, resp, _ in
             let ok = (resp as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? true
-            if ok, let data, let img = NSImage(data: data), img.isValid, img.size.width > 0 {
+            if ok, let data, data.count < 12_000_000, let img = NSImage(data: data), img.isValid, img.size.width > 0 {
                 DispatchQueue.main.async { MainActor.assumeIsolated { done(img) } }
             } else {
                 fetch(Array(urls.dropFirst()), done)
@@ -934,6 +988,7 @@ struct DeviceColumn: View {
 struct PresetBar: View {
     @ObservedObject var audio: AudioModel
     @State private var adding = false
+    @State private var renaming: Preset?     // поле названия открыто для этого набора, а не для нового
     @State private var name = ""
     @FocusState private var focused: Bool
 
@@ -949,9 +1004,10 @@ struct PresetBar: View {
                             .textFieldStyle(.roundedBorder).controlSize(.small).frame(width: 130)
                             .focused($focused)
                             .onSubmit(save)
-                            .onExitCommand { adding = false }
+                            .onExitCommand(perform: cancel)
                         Button(tr("Сохранить", "Save", "Salvesta"), action: save).controlSize(.small)
-                        Button { adding = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.secondary)
+                        Button(action: cancel) { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.secondary)
+                            .accessibilityLabel(tr("Отмена", "Cancel", "Tühista"))
                     } else {
                         Button {
                             name = Presets.defaultName(audio.presets)
@@ -977,9 +1033,11 @@ struct PresetBar: View {
     }
 
     private func save() {
-        audio.addPreset(name)
-        adding = false
+        if let r = renaming { audio.renamePreset(r, name) } else { audio.addPreset(name) }
+        cancel()
     }
+
+    private func cancel() { adding = false; renaming = nil }
 
     private func chip(_ p: Preset, _ i: Int) -> some View {
         let active = audio.isActive(p)
@@ -990,7 +1048,7 @@ struct PresetBar: View {
         if !missing.isEmpty { help += "\n" + tr("Не подключено: ", "Not connected: ", "Pole ühendatud: ") + missing.joined(separator: ", ") }
         return Button { audio.applyPreset(p) } label: {
             HStack(spacing: 5) {
-                Text(p.name).lineLimit(1)
+                Text(p.name).lineLimit(1).truncationMode(.tail).frame(maxWidth: 150)
                 if let k = Presets.hotkeyLabel(i) { Text(k).foregroundStyle(active ? Color.accentColor.opacity(0.7) : Color.secondary.opacity(0.7)) }
             }
             .font(.system(size: 11.5, weight: .medium))
@@ -1001,6 +1059,12 @@ struct PresetBar: View {
         .buttonStyle(.plain)
         .help(help)
         .contextMenu {
+            Button(tr("Переименовать…", "Rename…", "Nimeta ümber…")) {
+                name = p.name
+                renaming = p
+                adding = true
+                DispatchQueue.main.async { focused = true }
+            }
             Button(tr("Обновить текущими устройствами", "Update with current devices", "Uuenda praeguste seadmetega")) { audio.overwritePreset(p) }
             if i > 0 { Button(tr("Сдвинуть левее", "Move left", "Liiguta vasakule")) { audio.movePreset(p, by: -1) } }
             if i < audio.presets.count - 1 { Button(tr("Сдвинуть правее", "Move right", "Liiguta paremale")) { audio.movePreset(p, by: 1) } }
@@ -1058,7 +1122,7 @@ struct MediaRow: View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).frame(width: 22, height: 22).contentShape(Rectangle())
         }
-        .buttonStyle(.plain).foregroundStyle(.secondary).help(help)
+        .buttonStyle(.plain).foregroundStyle(.secondary).help(help).accessibilityLabel(help)
     }
 
     var body: some View {
@@ -1111,6 +1175,8 @@ struct MediaRow: View {
                     .foregroundStyle(Color.accentColor)
                     .symbolEffect(.variableColor.iterative, options: .repeating)
             }
+            let toggleLabel = item.isSoundOnly ? (item.muted ? tr("Вернуть звук", "Unmute", "Taasta heli") : tr("Выключить звук", "Mute", "Vaigista"))
+                                               : (item.playing ? tr("Пауза", "Pause", "Paus") : tr("Играть", "Play", "Mängi"))
             Button { media.toggle(item) } label: {
                 Image(systemName: item.isSoundOnly ? (item.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                                                    : (item.playing ? "pause.fill" : "play.fill"))
@@ -1119,8 +1185,8 @@ struct MediaRow: View {
                     .background(Circle().fill(item.playing ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.08)))
             }
             .buttonStyle(.plain)
-            .help(item.isSoundOnly ? (item.muted ? tr("Вернуть звук", "Unmute", "Taasta heli") : tr("Выключить звук", "Mute", "Vaigista"))
-                                   : (item.playing ? tr("Пауза", "Pause", "Paus") : tr("Играть", "Play", "Mängi")))
+            .help(toggleLabel)
+            .accessibilityLabel(toggleLabel)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -1163,6 +1229,7 @@ struct RouteMenu: View {
         }
         .buttonStyle(.plain)
         .help(tr("Куда выводить звук", "Where to send the sound", "Kuhu heli saata"))
+        .accessibilityLabel(tr("Куда выводить звук", "Where to send the sound", "Kuhu heli saata"))
     }
 }
 
@@ -1205,11 +1272,12 @@ enum RouteNSMenu {
             m.addItem(.sectionHeader(title: tr("Только эта вкладка", "Only this tab", "Ainult see vahekaart")))
             devices(into: m, outputs: media.outputs, isOn: { d in d.map { $0.name == it.sinkName } ?? (it.sinkName == nil) },
                     pick: { media.setTabSink(it, $0?.name) })
-        } else {
+            m.addItem(.separator())
+        } else if it.appBundle != Media.safari {   // в Safari расширение Chrome не поставить
             m.addItem(item(tr("Только эта вкладка: поставить «Lark для Chrome»…", "Only this tab: install Lark for Chrome…",
-                              "Ainult see vahekaart: paigalda „Lark Chrome’ile“…")) { ChromeExtension.openInstall() })
+                              "Ainult see vahekaart: paigalda „Lark Chrome’ile“…")) { ChromeExtension.openInstall(it.appBundle) })
+            m.addItem(.separator())
         }
-        m.addItem(.separator())
         let whole = NSMenuItem(title: tr("Весь \(it.appName)", "All of \(it.appName)", "Kogu \(it.appName)"), action: nil, keyEquivalent: "")
         let sub = NSMenu()
         devices(into: sub, outputs: media.outputs, isOn: appOn, pick: appPick)
@@ -1223,11 +1291,11 @@ enum RouteNSMenu {
     static func show(_ it: MediaItem, _ media: MediaModel) {
         let at = NSEvent.mouseLocation
         let open = { build(it, media).popUp(positioning: nil, at: at, in: nil) }
-        if NSApp.isActive { open(); return }
+        if NSApp.isActive { _ = open(); return }
         NSApp.activate(ignoringOtherApps: true)
         func wait(_ left: Int) {
             if NSApp.isActive || left == 0 {
-                DispatchQueue.main.async { open() }   // после того как macOS закончит переключение
+                DispatchQueue.main.async { _ = open() }   // после того как macOS закончит переключение
             } else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { wait(left - 1) }
             }
@@ -1240,9 +1308,11 @@ enum RouteNSMenu {
 enum ChromeExtension {
     static var folder: URL { URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Lark/Chrome") }
 
-    static func openInstall() {
+    /// browser — в каком браузере открыть страницу расширений (Brave, Edge, Arc и другие родственники Chrome её тоже понимают).
+    static func openInstall(_ browser: String = "com.google.Chrome") {
         NSWorkspace.shared.activateFileViewerSelecting([folder])
-        if let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome"),
+        if let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser)
+            ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome"),
            let u = URL(string: "chrome://extensions") {
             NSWorkspace.shared.open([u], withApplicationAt: chrome, configuration: NSWorkspace.OpenConfiguration())
         }
@@ -1258,6 +1328,13 @@ enum ChromeExtension {
 
 struct MediaSection: View {
     @ObservedObject var media: MediaModel
+    static let maxRows = 6
+    /// Высота прокручиваемого списка: шесть с половиной строк (половина подсказывает, что ниже есть ещё),
+    /// на маленьком экране меньше — чтобы панель целиком помещалась.
+    @MainActor static var scrollHeight: CGFloat {
+        let screen = NSScreen.main?.visibleFrame.height ?? 800
+        return max(200, min(376, screen - 500))
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -1290,7 +1367,13 @@ struct MediaSection: View {
                 Text(tr("Ничего не играет", "Nothing is playing", "Midagi ei mängi")).foregroundStyle(.secondary)
                     .padding(.horizontal, 8).padding(.vertical, 4)
             }
-            ForEach(media.items) { MediaRow(item: $0, media: media) }
+            // Много строк (десяток вкладок с начатыми видео) — список прокручивается, иначе панель выше экрана.
+            let rows = VStack(alignment: .leading, spacing: 4) { ForEach(media.items) { MediaRow(item: $0, media: media) } }
+            if media.items.count > Self.maxRows {
+                ScrollView { rows }.frame(height: Self.scrollHeight)
+            } else {
+                rows
+            }
 
             ForEach(media.hints) { h in
                 HStack(alignment: .top, spacing: 6) {
@@ -1383,6 +1466,7 @@ struct PanelView: View {
                     if audio.update != nil { Circle().fill(Color.orange).frame(width: 7, height: 7).offset(x: 3, y: -2) }
                 }
                 .help(tr("Настройки Lark", "Lark settings", "Larki seaded"))
+                .accessibilityLabel(tr("Настройки Lark", "Lark settings", "Larki seaded"))
             }
             .font(.system(size: 12))
             .padding(.horizontal, 18)
@@ -1404,6 +1488,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let popover = NSPopover()
     private var outsideClicks: Any?
     private var flashWork: DispatchWorkItem?
+    private var previousApp: NSRunningApplication?   // кто был активен до открытия панели — ему вернём клавиатуру
+    private var volumeTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--unregister-login") {   // нужно для uninstall.sh
@@ -1481,7 +1567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         Audio.listen(systemObject, kAudioHardwarePropertyDevices) { [weak self] in
             changed()
             MainActor.assumeIsolated {   // устройство подключили или отключили — выходы программ пересобрать
-                if let self { self.media.outputs = self.audio.outputs; self.media.rebuildTaps() }
+                if let self { self.media.setOutputs(self.audio.outputs) }
             }
             // Bluetooth-устройства иногда «перехватывают» вход с задержкой после подключения
             for delay in [0.7, 2.0] {
@@ -1539,11 +1625,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func checkUpdate(force: Bool, report: Bool = false) {
         if report { audio.updateNote = tr("Проверяю…", "Checking…", "Kontrollin…") }
-        Updater.check(force: force) { [weak self] v in
+        Updater.check(force: force) { [weak self] v, reached in
             guard let self else { return }
             self.audio.update = v
             if report {
-                self.audio.updateNote = v == nil ? tr("У вас последняя версия", "You have the latest version", "Teil on uusim versioon") : nil
+                self.audio.updateNote = v != nil ? nil
+                    : reached ? tr("У вас последняя версия", "You have the latest version", "Teil on uusim versioon")
+                    : tr("Не удалось проверить — нет связи с GitHub", "Couldn’t check — GitHub is unreachable", "Kontroll ebaõnnestus — GitHub pole kättesaadav")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 4) { MainActor.assumeIsolated { self.audio.updateNote = nil } }
             }
         }
@@ -1551,7 +1639,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func runUpdate() {
         audio.updateNote = tr("Обновляю… Lark перезапустится сам", "Updating… Lark will restart", "Uuendan… Lark käivitub uuesti")
-        Updater.install()
+        Updater.install { [weak self] in
+            MainActor.assumeIsolated {
+                self?.audio.updateNote = tr("Обновить не удалось — попробуйте позже", "Update failed — try again later", "Uuendamine ebaõnnestus — proovige hiljem")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { MainActor.assumeIsolated { self?.audio.updateNote = nil } }
+            }
+        }
     }
 
     private func registerHotkeys() {
@@ -1580,6 +1673,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         audio.refresh()
         media.outputs = audio.outputs
         media.start()
+        volumeTimer?.invalidate()
+        volumeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.audio.syncVolumes() }
+        }
+        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() { previousApp = front }
         NSApp.activate(ignoringOtherApps: true)   // сразу активной: иначе первое меню в панели закрылось бы при переключении
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
@@ -1591,7 +1689,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         media.stop()
+        volumeTimer?.invalidate(); volumeTimer = nil
         if let m = outsideClicks { NSEvent.removeMonitor(m); outsideClicks = nil }
+        // Панель закрыли значком или Esc: Lark остаётся активной программой без окон, и клавиатура не попадает никуда.
+        // Вернуть активность тому, кто был до панели. Если закрыли щелчком в другой программе, Lark уже не активна —
+        // ничего не делаем; не мешаем и своему окну с инструкцией.
+        let prev = previousApp
+        previousApp = nil
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                if NSApp.isActive, NSApp.modalWindow == nil, !self.popover.isShown, let prev, !prev.isTerminated { prev.activate() }
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) { media.unmuteAll() }

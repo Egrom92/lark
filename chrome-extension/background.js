@@ -203,7 +203,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     }
     if (msg.type === 'mySink') {   // content.js после загрузки страницы: куда выведена эта вкладка
       const live = sender.tab ? await liveRoute(sender.tab.id) : null;
-      return reply({ label: live ? live.label : '', diag: await diagText() });
+      return reply({ label: live ? live.label : '' });   // диагностику — только после действия пользователя (меню)
     }
     if (msg.type === 'devicesChanged' || msg.type === 'permissionGranted') {
       await buildMenu();
@@ -226,6 +226,6 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   if (r[tabId]) {
     delete r[tabId];
     await saveRoutes(r);
-    offscreen({ type: 'stop', tabId });
+    offscreen({ type: 'stop', tabId }).catch(() => {});
   }
 });

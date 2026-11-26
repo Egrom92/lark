@@ -1,7 +1,7 @@
 // Невидимый документ: забирает звук вкладок (getUserMedia с chromeMediaSource 'tab') и проигрывает каждый
 // в своё устройство через AudioContext.setSinkId. Пока звук вкладки захвачен, Chrome сам его не играет.
 
-const tabs = new Map(); // tabId → { stream, ctx }
+const tabs = new Map(); // tabId → { stream, ctx, deviceId }
 
 async function deviceList() {
   return larkDevices();
@@ -31,19 +31,43 @@ async function start(tabId, streamId, deviceId) {
     video: false,
   });
   const ctx = new AudioContext({ latencyHint: 'playback' });
-  await ctx.setSinkId(deviceId);
-  ctx.createMediaStreamSource(stream).connect(ctx.destination);
-  await ctx.resume();
+  try {
+    await ctx.setSinkId(deviceId);
+    ctx.createMediaStreamSource(stream).connect(ctx.destination);
+    await ctx.resume();
+  } catch (e) {
+    // Устройства уже нет (выключили, пока было открыто меню): захваченный звук отпустить, иначе вкладка
+    // замолчит до перезагрузки — Chrome сам её не играет, пока звук у расширения.
+    stream.getTracks().forEach((tr) => tr.stop());
+    ctx.close();
+    throw e;
+  }
   stream.getAudioTracks().forEach((tr) =>
     tr.addEventListener('ended', () => {
       stop(tabId);
       chrome.runtime.sendMessage({ type: 'ended', tabId });
     }),
   );
-  tabs.set(tabId, { stream, ctx });
+  tabs.set(tabId, { stream, ctx, deviceId });
 }
 
-navigator.mediaDevices.addEventListener('devicechange', () => chrome.runtime.sendMessage({ type: 'devicesChanged' }));
+/** Колонку выключили, пока в неё играла вкладка: вернуть вкладке обычный звук, а не оставлять её немой. */
+async function dropLostDevices() {
+  if (!tabs.size) return;
+  const all = await navigator.mediaDevices.enumerateDevices();
+  const ids = new Set(all.filter((d) => d.kind === 'audiooutput' && d.deviceId).map((d) => d.deviceId));
+  if (!ids.size) return;   // Chrome не показал устройства вовсе — судить не по чему
+  for (const [tabId, x] of [...tabs]) {
+    if (ids.has(x.deviceId)) continue;
+    stop(tabId);
+    chrome.runtime.sendMessage({ type: 'ended', tabId });
+  }
+}
+
+navigator.mediaDevices.addEventListener('devicechange', () => {
+  chrome.runtime.sendMessage({ type: 'devicesChanged' });
+  dropLostDevices().catch(() => {});
+});
 
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (msg.target !== 'offscreen') return false;
@@ -57,6 +81,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         const x = tabs.get(msg.tabId);
         if (!x) return reply({ ok: false, error: 'not captured' });
         await x.ctx.setSinkId(msg.deviceId);
+        x.deviceId = msg.deviceId;
         return reply({ ok: true });
       }
       if (msg.type === 'start') { await start(msg.tabId, msg.streamId, msg.deviceId); return reply({ ok: true }); }

@@ -1,11 +1,18 @@
 // Метки для Lark: на странице работает «Lark для Chrome» (data-lark-ext) и куда выведен звук вкладки (data-lark-sink).
+// Атрибуты страницы видит и сам сайт, поэтому в data-lark-sink — не название устройства (в нём бывает имя владельца:
+// «AirPods Pro (Roman)»), а короткий ключ от названия; Lark считает такой же ключ для своих устройств (sinkKey в Logic.swift).
 (() => {
   // Уже подключён живой экземпляр — второй не нужен. После перезагрузки расширения старый экземпляр «мёртв»
   // (chrome.runtime.id пропадает) — тогда подключаемся заново.
   if (window.__larkAlive && window.__larkAlive()) return;
   window.__larkAlive = () => { try { return !!chrome.runtime.id; } catch (e) { return false; } };
   const root = document.documentElement;
-  const setSink = (label) => (label ? root.setAttribute('data-lark-sink', label) : root.removeAttribute('data-lark-sink'));
+  const key = (s) => {   // FNV-1a по единицам UTF-16
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;
+    return '#' + h.toString(16);
+  };
+  const setSink = (label) => (label ? root.setAttribute('data-lark-sink', key(label)) : root.removeAttribute('data-lark-sink'));
   root.setAttribute('data-lark-ext', '1');
   root.removeAttribute('data-lark-sink');   // старая метка от прошлого экземпляра — пока не подтвердит фон
   const setDiag = (d) => d && root.setAttribute('data-lark-diag', d);
@@ -19,7 +26,9 @@
     const want = root.getAttribute('data-lark-want');
     if (!want) return;
     root.removeAttribute('data-lark-want');
-    chrome.runtime.sendMessage({ type: 'routeByLabel', label: decodeURIComponent(want) }, (res) => {
+    let label;
+    try { label = decodeURIComponent(want); } catch (e) { return root.setAttribute('data-lark-error', 'bad request'); }
+    chrome.runtime.sendMessage({ type: 'routeByLabel', label }, (res) => {
       if (chrome.runtime.lastError) return root.setAttribute('data-lark-error', chrome.runtime.lastError.message);
       if (res && res.ok) root.removeAttribute('data-lark-error');
       else root.setAttribute('data-lark-error', (res && res.error) || 'failed');
@@ -29,6 +38,5 @@
   chrome.runtime.sendMessage({ type: 'mySink' }, (res) => {
     if (chrome.runtime.lastError) return;
     setSink(res && res.label);
-    setDiag(res && res.diag);
   });
 })();

@@ -14,6 +14,8 @@ final class AppVolume {
     private let gainPtr = UnsafeMutablePointer<Float>.allocate(capacity: 1)
     let objs: [AudioObjectID]
     let outputUID: String
+    /// С этого начинается UID служебного устройства перехвата — по нему Lark не показывает его в своих списках.
+    static let uidPrefix = "Lark-volume-"
 
     var gain: Float {
         get { gainPtr.pointee }
@@ -35,7 +37,7 @@ final class AppVolume {
         guard AudioHardwareCreateProcessTap(desc, &tapID) == noErr, tapID != kAudioObjectUnknown else { return nil }
         let agg: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Lark volume",
-            kAudioAggregateDeviceUIDKey: "Lark-volume-\(UUID().uuidString)",
+            kAudioAggregateDeviceUIDKey: AppVolume.uidPrefix + UUID().uuidString,
             kAudioAggregateDeviceMainSubDeviceKey: clock,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
