@@ -1,5 +1,6 @@
-// Громкость отдельной программы (Zoom, Teams, Telegram, игры): Core Audio tap с muteBehavior = .muted забирает её звук,
-// а Lark выводит его в текущий выход, умножив на громкость строки. Громкость 0 — тишина («выключить звук»).
+// Громкость и выход отдельной программы (Zoom, Teams, Telegram, Spotify, плеер): Core Audio tap с muteBehavior = .muted
+// забирает её звук, а Lark выводит его в выбранное устройство (по умолчанию — в текущий выход), умножив на громкость строки.
+// Громкость 0 — тишина («выключить звук»).
 // Нужен доступ «Запись системного звука» (macOS 14.2+). Звук никуда не записывается. Закрыли Lark — звук как был.
 import CoreAudio
 import AudioToolbox
@@ -19,11 +20,11 @@ final class AppVolume {
         set { gainPtr.pointee = max(0, min(1, newValue)) }
     }
 
-    init?(objs: [AudioObjectID], gain: Float) {
+    /// deviceUID — куда выводить; nil — в текущий выход системы.
+    init?(objs: [AudioObjectID], gain: Float, deviceUID: String? = nil) {
         self.objs = objs
         gainPtr.initialize(to: max(0, min(1, gain)))
-        let out = Audio.defaultDevice(.output)
-        guard let clock = Audio.string(out, kAudioDevicePropertyDeviceUID) else { return nil }
+        guard let clock = deviceUID ?? Audio.string(Audio.defaultDevice(.output), kAudioDevicePropertyDeviceUID) else { return nil }
         outputUID = clock
 
         let desc = CATapDescription(stereoMixdownOfProcesses: objs)

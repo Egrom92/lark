@@ -98,6 +98,13 @@ else
     codesign --force --sign - "$BUILD" 2>/dev/null
 fi
 
+# «Lark для Chrome»: постоянная папка, откуда расширение ставится в Chrome (и обновляется вместе с Lark)
+EXT="$HOME/Library/Application Support/Lark/Chrome"
+if [ -d chrome-extension ]; then
+    mkdir -p "$EXT"
+    rsync -a --delete chrome-extension/ "$EXT/" 2>/dev/null || { rm -rf "$EXT"; cp -R chrome-extension "$EXT"; }
+fi
+
 say "Ставлю в $APP"
 pkill -x Lark 2>/dev/null || true
 sleep 0.5

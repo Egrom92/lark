@@ -1,0 +1,44 @@
+{
+ "name": {
+  "message": "Lark Chrome’ile"
+ },
+ "description": {
+  "message": "Ühe vahekaardi heli valitud kõlarisse või kõrvaklappidesse. Töötab koos Maci programmiga Lark."
+ },
+ "menuTitle": {
+  "message": "Lark: selle vahekaardi heli"
+ },
+ "sameAsAll": {
+  "message": "Nagu kõik"
+ },
+ "allowDevices": {
+  "message": "Luba ligipääs seadmete loendile…"
+ },
+ "popupTitle": {
+  "message": "Kuhu selle vahekaardi heli saata?"
+ },
+ "popupHint": {
+  "message": "Teisi vahekaarte ja programme see ei muuda. „Nagu kõik“ — tagasi."
+ },
+ "noDevices": {
+  "message": "Chrome näitab seadmete nimesid alles pärast luba."
+ },
+ "setupTitle": {
+  "message": "Lubage „Lark Chrome’ile“ näha teie kõlareid"
+ },
+ "setupText": {
+  "message": "Chrome näitab kõlarite ja kõrvaklappide loendit ainult mikrofoniloaga laiendustele. Lark ei salvesta midagi: kohe pärast loendi saamist vabastatakse mikrofon."
+ },
+ "setupButton": {
+  "message": "Luba"
+ },
+ "setupDone": {
+  "message": "Valmis. Selle vahekaardi võib sulgeda: paremklõps mis tahes lehel → Lark."
+ },
+ "setupFailed": {
+  "message": "Chrome ei lubanud. Klõpsake aadressiriba lukuikoonil, lubage mikrofon ja proovige uuesti."
+ },
+ "cantCapture": {
+  "message": "Selle lehe heli ei saa ümber suunata (Chrome ei luba seda oma lehtedel)."
+ }
+}

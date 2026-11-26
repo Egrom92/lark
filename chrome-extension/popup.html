@@ -1,0 +1,18 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+ :root { color-scheme: light dark; --bg: #fff; --ink: #1d1d1f; --mute: #6e6e73; --hover: #f0f0f2; --acc: #0a64d8; --sel: #e6efff; }
+ @media (prefers-color-scheme: dark) { :root { --bg: #232326; --ink: #f5f5f7; --mute: #a1a1a6; --hover: #2f2f33; --acc: #4c9bff; --sel: #1f3350; } }
+ body { margin: 0; width: 290px; font: 13px -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+ header { display: flex; align-items: center; gap: 8px; padding: 12px 14px 6px; font-weight: 600; }
+ header img { width: 22px; height: 22px; }
+ ul { list-style: none; margin: 0; padding: 4px 6px; }
+ li button { width: 100%; text-align: left; border: 0; background: none; color: inherit; font: inherit; padding: 7px 10px; border-radius: 7px; cursor: pointer; display: flex; justify-content: space-between; }
+ li button:hover { background: var(--hover); }
+ li button.on { background: var(--sel); color: var(--acc); font-weight: 600; }
+ p { margin: 4px 14px 12px; color: var(--mute); font-size: 11.5px; line-height: 1.4; }
+ .err { color: #d33; }
+ a { color: var(--acc); }
+</style></head><body>
+<header><img src="icons/32.png" alt=""><span id="title"></span></header>
+<ul id="list"></ul>
+<p id="hint"></p>
+<script src="popup.js"></script></body></html>

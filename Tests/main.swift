@@ -70,11 +70,11 @@ let chrome = Browser(bundle: "com.google.Chrome", name: "Chrome")
 let safari = Browser(bundle: Media.safari, name: "Safari")
 /// Строка ответа вкладки: окно ␟ вкладка ␟ играет ␟ сайт ␟ значок ␟ обложка ␟ позиция ␟ длина ␟ громкость ␟ название.
 func tab(_ w: String, _ t: String, _ on: String, _ host: String, _ icon: String = "", _ art: String = "",
-         _ pos: String = "0.0", _ dur: String = "0.0", _ vol: String = "1.00", title: String) -> String {
-    [w, t, on, host, icon, art, pos, dur, vol, title].joined(separator: F)
+         _ pos: String = "0.0", _ dur: String = "0.0", _ vol: String = "1.00", ext: String = "0", sink: String = "", title: String) -> String {
+    [w, t, on, host, icon, art, pos, dur, vol, ext, sink, title].joined(separator: F)
 }
 let tabsOut = [
-    tab("11", "101", "1", "youtube.com", "https://y/icon.png", "https://i.ytimg.com/vi/x/hq.jpg", "75.5", "300.0", "0.40", title: "Видео — Автор"),
+    tab("11", "101", "1", "youtube.com", "https://y/icon.png", "https://i.ytimg.com/vi/x/hq.jpg", "75.5", "300.0", "0.40", ext: "1", sink: "JBL Flip 6", title: "Видео — Автор"),
     tab("11", "102", "0", "facebook.com", title: ""),
     tab("12", "7", "1", "site.ee", "https://s/i.png", title: "A\(F)B"),      // разделитель внутри названия
     "мусор",
@@ -96,6 +96,9 @@ eq(tabs.items[0].artworkURL, "https://i.ytimg.com/vi/x/hq.jpg", "превью в
 eq(tabs.items[0].position, 75.5, "позиция видео")
 eq(tabs.items[0].duration, 300, "длина видео")
 eq(tabs.items[0].volume, 0.4, "громкость вкладки")
+check(tabs.items[0].hasExtension, "во вкладке есть «Lark для Chrome»")
+eq(tabs.items[0].sinkName, "JBL Flip 6", "звук вкладки выведен в колонку")
+check(!tabs.items[1].hasExtension && tabs.items[1].sinkName == nil, "без расширения — без устройства")
 check(tabs.items[0].canSeek, "видео можно перематывать")
 eq(tabs.items[1].duration, nil, "длина 0 (эфир) — без полоски")
 check(!tabs.items[1].canSeek, "эфир не перематывается")
@@ -178,6 +181,20 @@ eq(clock(-3), "0:00", "отрицательное — ноль")
 eq(clock(.infinity), "0:00", "бесконечность — ноль")
 eq(number("12,5"), 12.5, "запятая")
 eq(number("missing value"), nil, "не число")
+
+// MARK: - Куда выводить
+
+let outs2 = [Device(id: 1, uid: "air", name: "AirPods", transport: 0), Device(id: 2, uid: "jbl", name: "JBL", transport: 0)]
+eq(Routes.target("jbl", outputs: outs2, defaultUID: "air"), "jbl", "своё устройство подключено — туда")
+eq(Routes.target("air", outputs: outs2, defaultUID: "air"), nil, "своё устройство и так текущее — перехват не нужен")
+eq(Routes.target("gone", outputs: outs2, defaultUID: "air"), nil, "устройство отключено — как у всех")
+eq(Routes.target(nil, outputs: outs2, defaultUID: "air"), nil, "без выбора — как у всех")
+check(!Routes.needsTap(muted: false, gain: 1, target: nil), "ничего не меняли — без перехвата")
+check(Routes.needsTap(muted: false, gain: 1, target: "jbl"), "свой выход — перехват")
+check(Routes.needsTap(muted: false, gain: 0.5, target: nil), "громкость — перехват")
+check(Routes.needsTap(muted: true, gain: 1, target: nil), "без звука — перехват")
+eq(Routes.decode(["com.spotify.client": "air"]), ["com.spotify.client": "air"], "маршруты читаются из настроек")
+eq(Routes.decode(nil), [:], "нет настроек — пусто")
 
 // MARK: - Языки
 
@@ -298,8 +315,8 @@ MainActor.assumeIsolated {
     // В тестовом окне звук «играет», но время не идёт (вывода звука нет) — перематываем вручную, как будто послушали 5 секунд
     w.wait(5) { w.js("var a=document.getElementById('a');a.play();a.currentTime=5;a.paused?'':'y'") == "y" }
     var r = w.js(Media.probeJS).components(separatedBy: F)
-    eq(r.count, 8, "ответ вкладки из 8 частей (\(r))")
-    if r.count == 8 {
+    eq(r.count, 10, "ответ вкладки из 10 частей (\(r))")
+    if r.count == 10 {
         eq(r[0], "1", "звук играет")
         eq(r[1], "example.com", "сайт без www")
         eq(r[2], "https://www.example.com/apple.png", "выбран самый крупный значок (apple-touch-icon 180 > 96)")
@@ -307,7 +324,9 @@ MainActor.assumeIsolated {
         eq(r[4], "5.0", "позиция")
         eq(r[5], "30.0", "длина")
         eq(r[6], "1.00", "громкость")
-        eq(r[7], "Песня — Певец", "название из mediaSession")
+        eq(r[7], "0", "расширения нет")
+        eq(r[8], "", "устройства нет")
+        eq(r[9], "Песня — Певец", "название из mediaSession")
     }
     @MainActor func t(_ id: String) -> Double { Double(w.js("String(document.getElementById('\(id)').currentTime)")) ?? -1 }
     _ = w.js(Media.tabJS(.seek(12)))
@@ -319,6 +338,9 @@ MainActor.assumeIsolated {
     _ = w.js(Media.tabJS(.volume(0.25)))
     eq(w.js(Media.probeJS).components(separatedBy: F).dropFirst(6).first, "0.25", "громкость вкладки")
     _ = w.js(Media.tabJS(.volume(1)))
+    _ = w.js("document.documentElement.setAttribute('data-lark-ext','1');document.documentElement.setAttribute('data-lark-sink','AirPods Pro');''")
+    r = w.js(Media.probeJS).components(separatedBy: F)
+    eq(r.count == 10 ? r[7] + "|" + r[8] : "", "1|AirPods Pro", "метки расширения читаются со страницы")
     _ = w.js("document.getElementById('a').currentTime=5;''")
     _ = w.js(Media.pauseJS)
     w.sleep(0.3)
@@ -334,9 +356,9 @@ MainActor.assumeIsolated {
     w.wait(5) { w.js("var v=document.getElementById('v');v.currentTime=5;v.pause();v.paused&&v.currentTime>1?'y':''") == "y" }
     r = w.js(Media.probeJS).components(separatedBy: F)
     eq(r.first, "0", "начатое видео на паузе — в списке, можно продолжить")
-    eq(r.count == 8 ? r[2] : "", "https://www.example.com/favicon.ico", "запасной значок /favicon.ico")
-    eq(r.count == 8 ? r[3] : "x", "", "без mediaSession и og:image — без обложки")
-    eq(r.count == 8 ? r[7] : "", "Видео", "название — заголовок страницы")
+    eq(r.count == 10 ? r[2] : "", "https://www.example.com/favicon.ico", "запасной значок /favicon.ico")
+    eq(r.count == 10 ? r[3] : "x", "", "без mediaSession и og:image — без обложки")
+    eq(r.count == 10 ? r[9] : "", "Видео", "название — заголовок страницы")
 
     // Страница видео с og:image (как YouTube без mediaSession) — превью; og:image у статьи — не превью
     w.load("""
@@ -345,14 +367,14 @@ MainActor.assumeIsolated {
     """)
     w.wait(5) { w.js("var v=document.getElementById('v');v.currentTime=5;v.paused&&v.currentTime>1?'y':''") == "y" }
     r = w.js(Media.probeJS).components(separatedBy: F)
-    eq(r.count == 8 ? r[3] : "", "https://www.example.com/thumb.jpg", "превью видео из og:image")
+    eq(r.count == 10 ? r[3] : "", "https://www.example.com/thumb.jpg", "превью видео из og:image")
     w.load("""
     <html><head><title>Статья</title><meta property="og:type" content="article"><meta property="og:image" content="/logo.jpg"></head>
     <body><video id="v" src="\(wav)"></video></body></html>
     """)
     w.wait(5) { w.js("var v=document.getElementById('v');v.currentTime=5;v.paused&&v.currentTime>1?'y':''") == "y" }
     r = w.js(Media.probeJS).components(separatedBy: F)
-    eq(r.count == 8 ? r[3] : "x", "", "картинка статьи — не превью")
+    eq(r.count == 10 ? r[3] : "x", "", "картинка статьи — не превью")
 
     // Два ролика: главный — играющий, а не самый длинный на паузе
     w.load("""

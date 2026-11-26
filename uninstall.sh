@@ -9,5 +9,6 @@ for app in "/Applications/Lark.app" "$HOME/Applications/Lark.app"; do
     rm -rf "$app"
   fi
 done
+rm -rf "$HOME/Library/Application Support/Lark"
 defaults delete local.lark >/dev/null 2>&1 || true
 echo "✓ Lark удалён."

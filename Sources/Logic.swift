@@ -99,6 +99,24 @@ enum Presets {
     static func hotkeyLabel(_ index: Int) -> String? { index < maxHotkeys ? "⌃⌥\(index + 1)" : nil }
 }
 
+// MARK: - Куда выводить звук программы
+
+/// Программа → устройство вывода (UID). Хранится в настройках и применяется, как только программа появляется.
+enum Routes {
+    static let key = "routes"
+
+    static func decode(_ any: Any?) -> [String: String] { (any as? [String: String]) ?? [:] }
+
+    /// В какое устройство выводить сейчас: выбранное, если оно подключено и это не текущий выход; иначе nil — как у всех.
+    static func target(_ route: String?, outputs: [Device], defaultUID: String?) -> String? {
+        guard let r = route, r != defaultUID, outputs.contains(where: { $0.uid == r }) else { return nil }
+        return r
+    }
+
+    /// Нужен ли перехват звука: выключен, громкость не 100 % или свой выход.
+    static func needsTap(muted: Bool, gain: Double, target: String?) -> Bool { muted || gain < 0.999 || target != nil }
+}
+
 // MARK: - Версии и время
 
 /// «2.10» новее «2.9»: сравнение по числам через точку.
@@ -158,6 +176,9 @@ struct MediaItem: Identifiable, Equatable {
     var duration: Double? = nil     // длина, секунды (нет — прямой эфир или неизвестно)
     var volume: Double? = nil       // 0…1: своя громкость строки (вкладка, плеер, программа)
     var fetchedAt = Date()          // когда узнали position — между опросами время идёт само
+    var routeName: String? = nil    // звук программы выводится в это устройство (Lark)
+    var sinkName: String? = nil     // звук вкладки выводится в это устройство (расширение «Lark для Chrome»)
+    var hasExtension = false        // во вкладке работает «Lark для Chrome»
 
     var isSoundOnly: Bool { if case .sound = source { return true } else { return false } }
     var isPlayer: Bool { if case .player = source { return true } else { return false } }
@@ -174,7 +195,8 @@ struct MediaItem: Identifiable, Equatable {
     static func == (a: MediaItem, b: MediaItem) -> Bool {
         a.id == b.id && a.source == b.source && a.title == b.title && a.subtitle == b.subtitle && a.playing == b.playing
             && a.iconURL == b.iconURL && a.muted == b.muted && a.artworkURL == b.artworkURL && a.position == b.position
-            && a.duration == b.duration && a.volume == b.volume
+            && a.duration == b.duration && a.volume == b.volume && a.routeName == b.routeName && a.sinkName == b.sinkName
+            && a.hasExtension == b.hasExtension
     }
 }
 
@@ -250,7 +272,8 @@ enum Media {
     // JS внутри вкладки. Без двойных кавычек и обратных слэшей: он вставляется в строку AppleScript (это проверяет тест).
     // Главный ролик страницы — играющий, а из остальных самый длинный. Вкладка попадает в список, если в ней звучит
     // видео/аудио или есть начатое и поставленное на паузу.
-    // Ответ: 1/0 ␟ сайт ␟ значок ␟ обложка ␟ позиция ␟ длина (0 — эфир) ␟ громкость ␟ название.
+    // Ответ: 1/0 ␟ сайт ␟ значок ␟ обложка ␟ позиция ␟ длина (0 — эфир) ␟ громкость ␟ есть расширение ␟ его устройство ␟ название.
+    // Расширение «Lark для Chrome» помечает страницу атрибутами data-lark-ext и data-lark-sink (куда выведен звук вкладки).
     static let pickJS = "var m=[].slice.call(document.querySelectorAll('video,audio'));function d(x){return isFinite(x.duration)?x.duration:0}m.sort(function(a,b){return (a.paused-b.paused)||(d(b)-d(a))});var e=m[0];"
     static let probeJS = "(function(){var F=String.fromCharCode(31);" + pickJS
         + "var on=m.some(function(x){return !x.paused&&!x.ended&&!x.muted&&x.volume>0&&x.readyState>1});"
@@ -262,7 +285,8 @@ enum Media {
         + "var art='',ab=-1;if(md&&md.artwork){[].slice.call(md.artwork).forEach(function(a){var n=parseInt(a.sizes||'')||1;if(n>ab&&a.src){ab=n;art=a.src}})}"
         + "if(!art){var og='',ot='';[].slice.call(document.getElementsByTagName('meta')).forEach(function(x){var p=x.getAttribute('property');if(p=='og:image')og=x.content;if(p=='og:type')ot=x.content||''});if(og&&ot.indexOf('video')>=0)art=og}"
         + "try{if(art)art=new URL(art,location.href).href}catch(err){art=''}"
-        + "return (on?'1':'0')+F+h+F+ic+F+art+F+e.currentTime.toFixed(1)+F+d(e).toFixed(1)+F+(e.muted?0:e.volume).toFixed(2)+F+t;})()"
+        + "var de=document.documentElement;"
+        + "return (on?'1':'0')+F+h+F+ic+F+art+F+e.currentTime.toFixed(1)+F+d(e).toFixed(1)+F+(e.muted?0:e.volume).toFixed(2)+F+(de.getAttribute('data-lark-ext')?'1':'0')+F+(de.getAttribute('data-lark-sink')||'')+F+t;})()"
     static let pauseJS = "(function(){[].slice.call(document.querySelectorAll('video,audio')).forEach(function(e){e.pause()});return ''})()"
     static let playJS = "(function(){var m=[].slice.call(document.querySelectorAll('video,audio')).filter(function(e){return e.currentTime>1&&!e.ended});m.sort(function(a,b){return (b.duration||0)-(a.duration||0)});if(m[0]){m[0].muted=false;m[0].play()}return ''})()"
 
@@ -462,9 +486,9 @@ enum Media {
                 continue
             }
             let f = line.components(separatedBy: sep)
-            guard f.count >= 10, let w = Int(f[0]), let t = Int(f[1]), f[2] == "0" || f[2] == "1" else { continue }
+            guard f.count >= 12, let w = Int(f[0]), let t = Int(f[1]), f[2] == "0" || f[2] == "1" else { continue }
             let host = f[3]
-            let title = f[9...].joined(separator: sep)
+            let title = f[11...].joined(separator: sep)
             let source: MediaItem.Source = b.isSafari ? .safariTab(window: w, index: t) : .chromeTab(bundle: b.bundle, window: w, tab: t)
             var item = MediaItem(id: "tab:\(b.bundle):\(w):\(t)", source: source, appBundle: b.bundle, appName: b.name,
                                  title: title.isEmpty ? (host.isEmpty ? b.name : host) : title,
@@ -474,6 +498,8 @@ enum Media {
             item.position = number(f[6])
             item.duration = number(f[7]).flatMap { $0 > 0 ? $0 : nil }
             item.volume = number(f[8]).map { min(1, $0) }
+            item.hasExtension = f[9] == "1"
+            item.sinkName = f[10].isEmpty ? nil : f[10]
             item.fetchedAt = now
             items.append(item)
         }

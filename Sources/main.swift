@@ -408,6 +408,8 @@ final class MediaModel: ObservableObject {
     private var muted: Set<String> = []             // программы, выключенные кнопкой с динамиком
     private var gains: [String: Double] = [:]       // своя громкость программ (Zoom, Teams…)
     private var taps: [String: AppVolume] = [:]     // программа → её перехват звука
+    private var routes = Routes.decode(UserDefaults.standard.dictionary(forKey: Routes.key))   // программа → UID устройства
+    @Published var outputs: [Device] = []           // куда можно вывести звук программы (обновляет AppDelegate)
     private var soundObjs: [String: [AudioObjectID]] = [:]
     private var tapHint: Hint?
     private var volumeSends: [String: DispatchWorkItem] = [:]
@@ -434,9 +436,10 @@ final class MediaModel: ObservableObject {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     if gen == self.generation {
-                        self.items = self.order.sort(r.items)
+                        self.items = self.labelRoutes(self.order.sort(r.items))
                         self.hints = r.hints + (self.tapHint.map { [$0] } ?? [])
                         for s in r.sound { self.soundObjs[s.app.bundle] = s.objs }
+                        for b in self.routes.keys where self.taps[b] == nil { self.applyTap(b) }
                         self.loaded = true
                     }
                     self.busy = false
@@ -499,17 +502,28 @@ final class MediaModel: ObservableObject {
 
     // MARK: Звук программ (Telegram, Zoom, Teams…)
 
+    private var defaultOutputUID: String? { Audio.string(Audio.defaultDevice(.output), kAudioDevicePropertyDeviceUID) }
+
+    /// Привести перехват звука программы к нужному: громкость, «без звука», своё устройство вывода.
+    /// Пересоздаёт перехват, только если сменились процессы программы или устройство.
+    @discardableResult
     private func applyTap(_ b: String) -> Bool {
-        let eff = muted.contains(b) ? 0 : (gains[b] ?? 1)
-        if eff >= 0.999 {
+        let isMuted = muted.contains(b), gain = gains[b] ?? 1
+        let target = Routes.target(routes[b], outputs: outputs, defaultUID: defaultOutputUID)
+        guard Routes.needsTap(muted: isMuted, gain: gain, target: target) else {
             taps.removeValue(forKey: b)?.stop()
             return true
         }
-        if let t = taps[b] { t.gain = Float(eff); return true }
-        guard let objs = soundObjs[b], let t = AppVolume(objs: objs, gain: Float(eff)) else {
-            tapHint = Hint(id: "tap", text: tr("Чтобы менять громкость программ, разрешите Lark «Запись экрана и системного звука → Только системный звук».",
-                                               "To control app volume, allow Lark in Screen & System Audio Recording → System Audio Recording Only.",
-                                               "Programmide helitugevuse muutmiseks lubage Lark jaotises Ekraani ja süsteemiheli salvestamine → Ainult süsteemiheli."),
+        let eff = Float(isMuted ? 0 : gain)
+        let wantUID = target ?? defaultOutputUID
+        let objs = soundObjs[b] ?? []
+        if let t = taps[b], t.outputUID == wantUID, Set(t.objs) == Set(objs) { t.gain = eff; return true }
+        taps.removeValue(forKey: b)?.stop()
+        guard !objs.isEmpty else { return true }   // программа пока без звука — применим, когда появится
+        guard let t = AppVolume(objs: objs, gain: eff, deviceUID: target) else {
+            tapHint = Hint(id: "tap", text: tr("Чтобы менять громкость и выход программ, разрешите Lark «Запись экрана и системного звука → Только системный звук».",
+                                               "To control app volume and output, allow Lark in Screen & System Audio Recording → System Audio Recording Only.",
+                                               "Programmide helitugevuse ja väljundi muutmiseks lubage Lark jaotises Ekraani ja süsteemiheli salvestamine → Ainult süsteemiheli."),
                            openPrivacy: true)
             hints.removeAll { $0.id == "tap" }
             hints.append(tapHint!)
@@ -519,6 +533,36 @@ final class MediaModel: ObservableObject {
         hints.removeAll { $0.id == "tap" }
         taps[b] = t
         return true
+    }
+
+    /// Куда выводить звук программы: UID устройства или nil — как у всех. Запоминается.
+    func setRoute(_ b: String, _ uid: String?) {
+        routes[b] = uid
+        UserDefaults.standard.set(routes, forKey: Routes.key)
+        if !applyTap(b) { routes[b] = nil; UserDefaults.standard.set(routes, forKey: Routes.key) }
+        let name = uid.flatMap { u in outputs.first { $0.uid == u }?.name }
+        for i in items.indices where items[i].appBundle == b { items[i].routeName = name }
+        generation += 1
+    }
+
+    func route(_ b: String) -> String? { routes[b] }
+
+    /// Звуковые процессы изменились (программа запустилась, заиграла, закрылась) или сменились устройства:
+    /// обновить список процессов и применить сохранённые маршруты — даже когда панель закрыта.
+    func reconcile() {
+        for s in SoundApps.list() { soundObjs[s.app.bundle] = s.objs }
+        for b in Set(routes.keys).union(taps.keys) { applyTap(b) }
+    }
+
+    /// Подписать строки: куда выведен звук их программы.
+    private func labelRoutes(_ list: [MediaItem]) -> [MediaItem] {
+        list.map { it in
+            var x = it
+            if let uid = Routes.target(routes[it.appBundle], outputs: outputs, defaultUID: defaultOutputUID) {
+                x.routeName = outputs.first { $0.uid == uid }?.name
+            }
+            return x
+        }
     }
 
     func setAppGain(_ b: String, _ v: Double) {
@@ -544,11 +588,11 @@ final class MediaModel: ObservableObject {
         refresh()
     }
 
-    /// Выход звука сменился: перехваты привязаны к старому устройству — пересоздать на новом.
+    /// Выход звука сменился: перехваты «как у всех» привязаны к старому устройству — пересоздать на новом.
     func rebuildTaps() {
-        let list = Array(taps.keys)
+        let list = Array(Set(taps.keys).union(routes.keys))
         for b in list { taps.removeValue(forKey: b)?.stop() }
-        for b in list { _ = applyTap(b) }
+        for b in list { applyTap(b) }
     }
 
     func unmuteAll() { for t in taps.values { t.stop() }; taps.removeAll(); muted.removeAll(); gains.removeAll() }
@@ -655,6 +699,12 @@ enum SelfTest {
             v?.gain = 0.7
             say(v.map { abs($0.gain - 0.7) < 0.001 } ?? false, "громкость программы меняется на лету")
             v?.stop()
+            let def = Audio.string(Audio.defaultDevice(.output), kAudioDevicePropertyDeviceUID)
+            if let other = Audio.devices(.output).first(where: { $0.uid != def }) {
+                let r = AppVolume(objs: [me.obj], gain: 0.5, deviceUID: other.uid)
+                say(r?.outputUID == other.uid, "звук программы выводится в выбранное устройство (\(other.name))")
+                r?.stop()
+            }
         } else { print("— у Lark нет объекта звука, пропускаю перехват") }
     }
 }
@@ -990,7 +1040,16 @@ struct MediaRow: View {
                 MediaArt(item: item)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.title).lineLimit(1).truncationMode(.tail)
-                    Text(item.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    HStack(spacing: 4) {
+                        Text(item.subtitle).foregroundStyle(.secondary).lineLimit(1)
+                        if let dev = item.sinkName ?? item.routeName {
+                            Label(dev, systemImage: "arrow.turn.down.right")
+                                .labelStyle(.titleAndIcon).lineLimit(1)
+                                .foregroundStyle(Color.accentColor)
+                                .help(tr("Звук выводится в \(dev)", "Sound goes to \(dev)", "Heli läheb seadmesse \(dev)"))
+                        }
+                    }
+                    .font(.system(size: 11))
                     if item.canSeek { ProgressLine(item: item, media: media).padding(.top, 2) }
                 }
                 Spacer(minLength: 0)
@@ -1011,6 +1070,7 @@ struct MediaRow: View {
                         small("gobackward.10", tr("Назад на 10 секунд", "Back 10 seconds", "10 sekundit tagasi")) { media.perform(item, .skip(-10)) }
                         small("goforward.10", tr("Вперёд на 10 секунд", "Forward 10 seconds", "10 sekundit edasi")) { media.perform(item, .skip(10)) }
                     }
+                    RouteMenu(item: item, media: media)
                     if let v = item.volume {
                         Image(systemName: v < 0.01 ? "speaker.slash.fill" : (v < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill"))
                             .font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 18).padding(.leading, 4)
@@ -1053,8 +1113,76 @@ struct MediaRow: View {
                 Button(tr("Назад на 10 секунд", "Back 10 seconds", "10 sekundit tagasi")) { media.perform(item, .skip(-10)) }
             }
             Divider()
+            RouteMenuItems(item: item, media: media)
+            Divider()
             Button(tr("Открыть", "Open", "Ava")) { media.reveal(item) }
         }
+    }
+}
+
+/// Пункты «Куда выводить звук»: программа целиком — через Lark; отдельная вкладка — через расширение в Chrome.
+struct RouteMenuItems: View {
+    let item: MediaItem
+    @ObservedObject var media: MediaModel
+
+    var body: some View {
+        let current = media.route(item.appBundle)
+        let whole = item.isTab ? tr("Весь \(item.appName)", "All of \(item.appName)", "Kogu \(item.appName)") : item.appName
+        Menu(tr("Куда выводить: \(whole)", "Output for \(whole)", "Väljund: \(whole)")) {
+            Button((current == nil ? "✓ " : "") + tr("Как у всех", "Same as everything", "Nagu kõik")) { media.setRoute(item.appBundle, nil) }
+            Divider()
+            ForEach(media.outputs, id: \.uid) { d in
+                Button((current == d.uid ? "✓ " : "") + d.name) { media.setRoute(item.appBundle, d.uid) }
+            }
+        }
+        if item.isTab {
+            Button(item.hasExtension
+                   ? tr("Только эта вкладка: правый щелчок по странице → Lark", "Only this tab: right-click the page → Lark", "Ainult see vahekaart: paremklõps lehel → Lark")
+                   : tr("Только эта вкладка: поставить «Lark для Chrome»…", "Only this tab: install Lark for Chrome…", "Ainult see vahekaart: paigalda „Lark Chrome’ile“…")) {
+                if item.hasExtension { media.reveal(item) } else { ChromeExtension.openInstall() }
+            }
+        }
+    }
+}
+
+/// Кнопка-меню «куда выводить» в строке (при наведении).
+struct RouteMenu: View {
+    let item: MediaItem
+    @ObservedObject var media: MediaModel
+    var body: some View {
+        Menu { RouteMenuItems(item: item, media: media) } label: {
+            Image(systemName: "airplayaudio")
+                .symbolRenderingMode(.monochrome)
+                .renderingMode(.template)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle((item.routeName ?? item.sinkName) != nil ? Color.accentColor : Color.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .frame(width: 24)
+        .foregroundStyle((item.routeName ?? item.sinkName) != nil ? Color.accentColor : Color.secondary)
+        .help(tr("Куда выводить звук", "Where to send the sound", "Kuhu heli saata"))
+    }
+}
+
+/// «Lark для Chrome»: расширение лежит рядом с программой; ставится вручную через chrome://extensions → «Загрузить распакованное».
+enum ChromeExtension {
+    static var folder: URL { URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Lark/Chrome") }
+
+    static func openInstall() {
+        NSWorkspace.shared.activateFileViewerSelecting([folder])
+        if let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome"),
+           let u = URL(string: "chrome://extensions") {
+            NSWorkspace.shared.open([u], withApplicationAt: chrome, configuration: NSWorkspace.OpenConfiguration())
+        }
+        let a = NSAlert()
+        a.messageText = tr("Как поставить «Lark для Chrome»", "How to install Lark for Chrome", "Kuidas paigaldada „Lark Chrome’ile“")
+        a.informativeText = tr("1. В открывшейся странице Chrome включите «Режим разработчика» (справа вверху).\n2. Нажмите «Загрузить распакованное расширение» и выберите папку Chrome, которую показал Finder.\n3. Готово: правый щелчок по странице → «Lark: звук этой вкладки» → устройство.",
+                               "1. On the Chrome page that opened, turn on Developer mode (top right).\n2. Click Load unpacked and choose the Chrome folder shown in Finder.\n3. Done: right-click a page → Lark: this tab’s sound → device.",
+                               "1. Lülitage avanenud Chrome’i lehel sisse arendaja režiim (üleval paremal).\n2. Klõpsake „Laadi lahtipakitud“ ja valige Finderis näidatud kaust Chrome.\n3. Valmis: paremklõps lehel → „Lark: selle vahekaardi heli“ → seade.")
+        NSApp.activate()
+        a.runModal()
     }
 }
 
@@ -1159,6 +1287,9 @@ struct PanelView: View {
                             Button((forced == l.rawValue ? "✓ " : "") + l.selfName) { onLanguage(l) }
                         }
                     }
+                    Button(tr("Lark для Chrome: звук отдельной вкладки…", "Lark for Chrome: sound of a single tab…", "Lark Chrome’ile: ühe vahekaardi heli…")) {
+                        ChromeExtension.openInstall()
+                    }
                     if !audio.hidden.isEmpty {
                         Button(tr("Показать скрытые устройства (\(audio.hidden.count))", "Show hidden devices (\(audio.hidden.count))",
                                   "Näita peidetud seadmeid (\(audio.hidden.count))")) { audio.unhideAll() }
@@ -1251,8 +1382,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         audio.onPresetsChanged = { [weak self] in self?.registerHotkeys() }
 
         audio.refresh()
+        media.outputs = audio.outputs
+        media.reconcile()
         updateIcon()
         registerHotkeys()
+        // Программа начала или перестала работать со звуком — применить её сохранённый выход (и при закрытой панели).
+        Audio.listen(systemObject, kAudioHardwarePropertyProcessObjectList) { [weak self] in
+            MainActor.assumeIsolated { self?.media.reconcile() }
+        }
 
         let changed: () -> Void = { [weak self] in
             MainActor.assumeIsolated {
@@ -1268,6 +1405,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         Audio.listen(systemObject, kAudioHardwarePropertyDevices) { [weak self] in
             changed()
+            MainActor.assumeIsolated {   // устройство подключили или отключили — выходы программ пересобрать
+                if let self { self.media.outputs = self.audio.outputs; self.media.rebuildTaps() }
+            }
             // Bluetooth-устройства иногда «перехватывают» вход с задержкой после подключения
             for delay in [0.7, 2.0] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { self?.audio.keeper.enforceAll() } }
@@ -1363,6 +1503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown { popover.performClose(nil); return }
         guard let b = statusItem.button else { return }
         audio.refresh()
+        media.outputs = audio.outputs
         media.start()
         NSApp.activate()
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)

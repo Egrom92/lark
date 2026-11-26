@@ -1,0 +1,44 @@
+{
+ "name": {
+  "message": "Lark for Chrome"
+ },
+ "description": {
+  "message": "Send the sound of one tab to the speaker or headphones you choose. Works with the Lark app for Mac."
+ },
+ "menuTitle": {
+  "message": "Lark: this tab’s sound"
+ },
+ "sameAsAll": {
+  "message": "Same as everything"
+ },
+ "allowDevices": {
+  "message": "Allow access to the device list…"
+ },
+ "popupTitle": {
+  "message": "Where should this tab sound?"
+ },
+ "popupHint": {
+  "message": "Other tabs and apps are not affected. Choose “Same as everything” to return."
+ },
+ "noDevices": {
+  "message": "Chrome shows device names only after you allow it once."
+ },
+ "setupTitle": {
+  "message": "Allow Lark for Chrome to see your speakers"
+ },
+ "setupText": {
+  "message": "Chrome lists speakers and headphones only to extensions that have microphone permission. Lark does not record anything: right after the list appears, the microphone is released."
+ },
+ "setupButton": {
+  "message": "Allow"
+ },
+ "setupDone": {
+  "message": "Done. You can close this tab: right-click any page → Lark."
+ },
+ "setupFailed": {
+  "message": "Chrome did not allow it. Click the lock icon in the address bar and allow the microphone, then try again."
+ },
+ "cantCapture": {
+  "message": "This page’s sound can’t be redirected (Chrome doesn’t allow it on its own pages)."
+ }
+}
