@@ -49,6 +49,20 @@ mkdir -p "$BUILD/Contents/MacOS" "$BUILD/Contents/Resources"
 swiftc -O -swift-version 5 -target "$arch-apple-macos14.2" -o "$BUILD/Contents/MacOS/Lark" Sources/*.swift \
     || die "Сборка не удалась. Обновите Command Line Tools (Системные настройки → Основные → Обновление ПО) и попробуйте снова."
 cp Resources/AppIcon.icns "$BUILD/Contents/Resources/AppIcon.icns"
+VERSION=$(tr -d '[:space:]' < VERSION 2>/dev/null || echo 2.1)
+
+# Тексты запросов разрешений на языке macOS
+strings() { # язык, про Apple Events, про системный звук
+    mkdir -p "$BUILD/Contents/Resources/$1.lproj"
+    printf '"NSAppleEventsUsageDescription" = "%s";\n"NSAudioCaptureUsageDescription" = "%s";\n' "$2" "$3" \
+        > "$BUILD/Contents/Resources/$1.lproj/InfoPlist.strings"
+}
+strings en "Lark shows what is playing in Spotify, Music and browser tabs, and pauses it." \
+    "Lark changes the volume of individual apps (for example Zoom or Telegram) and mutes them. Nothing is recorded."
+strings ru "Lark показывает, что играет в Spotify, Музыке и вкладках браузера, и ставит это на паузу." \
+    "Lark меняет громкость отдельных программ (например, Zoom или Telegram) и выключает их звук. Ничего не записывается."
+strings et "Lark näitab, mis mängib Spotifys, Muusikas ja brauseri vahekaartidel, ning paneb selle pausile." \
+    "Lark muudab üksikute programmide (näiteks Zoomi või Telegrami) helitugevust ja vaigistab neid. Midagi ei salvestata."
 
 cat > "$BUILD/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -60,15 +74,18 @@ cat > "$BUILD/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>Lark</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>2.0</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleShortVersionString</key><string>__VERSION__</string>
+    <key>CFBundleVersion</key><string>__VERSION__</string>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleLocalizations</key><array><string>en</string><string>ru</string><string>et</string></array>
     <key>LSMinimumSystemVersion</key><string>14.2</string>
     <key>LSUIElement</key><true/>
-    <key>NSAppleEventsUsageDescription</key><string>Lark показывает, что играет в Spotify, Музыке и вкладках браузера, и ставит это на паузу.</string>
-    <key>NSAudioCaptureUsageDescription</key><string>Lark выключает звук отдельных программ (например, Telegram), когда вы нажимаете кнопку динамика. Звук никуда не записывается.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Lark shows what is playing in Spotify, Music and browser tabs, and pauses it.</string>
+    <key>NSAudioCaptureUsageDescription</key><string>Lark changes the volume of individual apps (for example Zoom or Telegram) and mutes them. Nothing is recorded.</string>
     <key>NSHumanReadableCopyright</key><string>Roman Egliens</string>
 </dict></plist>
 PLIST
+sed -i '' "s/__VERSION__/$VERSION/g" "$BUILD/Contents/Info.plist"
 
 # Постоянная подпись: разрешения macOS (управлять Chrome/Spotify, системный звук) привязаны к ней,
 # поэтому после обновления Lark не будет спрашивать их заново.
@@ -92,9 +109,10 @@ cat <<'DONE'
 
 ✅ Готово: значок «колонка и микрофон» в строке меню.
   • Щелчок по значку — панель: слева куда идёт звук, справа какой микрофон, ниже — что сейчас играет.
-  • У трека или вкладки — кнопка паузы; у Telegram и других программ — кнопка «выключить звук».
-  • «Держать» — не давать Mac самому переключаться на подключившиеся AirPods или колонку.
-  • Правый щелчок по устройству — скрыть его из списка. Шестерёнка внизу — автозапуск и выход.
+  • У трека или вкладки — пауза, перемотка и своя громкость; у Zoom, Telegram и других — громкость и «без звука».
+  • «＋ Запомнить» — набор «выход + микрофон», включается кнопкой или ⌃⌥1…9.
+  • Колесо мыши над значком — громкость. «Держать» — не давать Mac переключаться на AirPods самому.
+  • Шестерёнка внизу — язык (русский, English, eesti), автозапуск, обновления и выход.
 Lark сам запускается при входе в систему. Обновить — запустить эту же команду ещё раз.
 Удалить: curl -fsSL https://raw.githubusercontent.com/Egrom92/lark/main/uninstall.sh | bash
 DONE

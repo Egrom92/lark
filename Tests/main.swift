@@ -13,6 +13,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
     check(a == b, "\(what): ждали \(b), получили \(a)", line: line)
 }
 let F = Media.sep
+Lang.current = .ru   // тексты проверяем по-русски
 
 // MARK: - Имена и устройства
 
@@ -50,17 +51,32 @@ eq(Media.parsePlayer("paused\(F)Song\(F)", bundle: "m", name: "Музыка")?.p
 check(Media.parsePlayer("stopped\(F)\(F)", bundle: "m", name: "M") == nil, "остановленный плеер не показываем")
 check(Media.parsePlayer("playing\(F)\(F)x", bundle: "m", name: "M") == nil, "без названия трека не показываем")
 check(Media.parsePlayer("", bundle: "m", name: "M") == nil, "пустой ответ")
+let full = Media.parsePlayer(["playing", "Wasted", "NXT", "https://i.scdn.co/image/ab", "42,5", "180000", "65"].joined(separator: F),
+                             bundle: Media.spotify, name: "Spotify")
+eq(full?.artworkURL, "https://i.scdn.co/image/ab", "обложка Spotify")
+eq(full?.position, 42.5, "позиция с запятой (русская macOS)")
+eq(full?.duration, 180, "длина Spotify в миллисекундах → секунды")
+eq(full?.volume, 0.65, "громкость плеера 0–100 → 0–1")
+let music = Media.parsePlayer(["paused", "Song", "A", "", "10.0", "200.5", "100"].joined(separator: F), bundle: "com.apple.Music", name: "Музыка")
+eq(music?.duration, 200.5, "длина Музыки — уже секунды")
+eq(music?.artworkURL, nil, "без обложки")
 
 // MARK: - Разбор вкладок
 
 let chrome = Browser(bundle: "com.google.Chrome", name: "Chrome")
 let safari = Browser(bundle: Media.safari, name: "Safari")
+/// Строка ответа вкладки: окно ␟ вкладка ␟ играет ␟ сайт ␟ значок ␟ обложка ␟ позиция ␟ длина ␟ громкость ␟ название.
+func tab(_ w: String, _ t: String, _ on: String, _ host: String, _ icon: String = "", _ art: String = "",
+         _ pos: String = "0.0", _ dur: String = "0.0", _ vol: String = "1.00", title: String) -> String {
+    [w, t, on, host, icon, art, pos, dur, vol, title].joined(separator: F)
+}
 let tabsOut = [
-    "11\(F)101\(F)1\(F)youtube.com\(F)https://y/icon.png\(F)Видео — Автор",
-    "11\(F)102\(F)0\(F)facebook.com\(F)\(F)",
-    "12\(F)7\(F)1\(F)site.ee\(F)https://s/i.png\(F)A\(F)B",      // разделитель внутри названия
+    tab("11", "101", "1", "youtube.com", "https://y/icon.png", "https://i.ytimg.com/vi/x/hq.jpg", "75.5", "300.0", "0.40", title: "Видео — Автор"),
+    tab("11", "102", "0", "facebook.com", title: ""),
+    tab("12", "7", "1", "site.ee", "https://s/i.png", title: "A\(F)B"),      // разделитель внутри названия
     "мусор",
-    "x\(F)1\(F)1\(F)h\(F)i\(F)t",                                  // окно не число
+    tab("x", "1", "1", "h", title: "t"),                                     // окно не число
+    "11\(F)103\(F)1\(F)old\(F)i\(F)Старый формат",                          // мало полей — пропустить
     "!3\(F)",
 ].joined(separator: "\n")
 let tabs = Media.parseTabs(tabsOut, chrome)
@@ -73,9 +89,20 @@ eq(tabs.items[1].title, "facebook.com", "без названия — сайт")
 eq(tabs.items[1].iconURL, nil, "пустой значок")
 eq(tabs.items[1].playing, false, "на паузе")
 eq(tabs.items[2].title, "A\(F)B", "название с разделителем целиком")
-let st = Media.parseTabs("3\(F)2\(F)1\(F)ex.com\(F)\(F)T\n!1\(F)", safari)
+eq(tabs.items[0].artworkURL, "https://i.ytimg.com/vi/x/hq.jpg", "превью видео")
+eq(tabs.items[0].position, 75.5, "позиция видео")
+eq(tabs.items[0].duration, 300, "длина видео")
+eq(tabs.items[0].volume, 0.4, "громкость вкладки")
+check(tabs.items[0].canSeek, "видео можно перематывать")
+eq(tabs.items[1].duration, nil, "длина 0 (эфир) — без полоски")
+check(!tabs.items[1].canSeek, "эфир не перематывается")
+let t0 = Date(timeIntervalSince1970: 1000)
+let live = Media.parseTabs(tab("1", "1", "1", "a.ee", "", "", "10.0", "20.0", "1.00", title: "T"), chrome, at: t0).items[0]
+eq(live.livePosition(at: t0.addingTimeInterval(4)), 14, "между опросами время идёт само")
+eq(live.livePosition(at: t0.addingTimeInterval(60)), 20, "но не дальше конца")
+let st = Media.parseTabs(tab("3", "2", "1", "ex.com", title: "T") + "\n!1\(F)", safari)
 eq(st.items.first?.source, .safariTab(window: 3, index: 2), "вкладка Safari по номеру")
-let local = Media.parseTabs("1\(F)2\(F)1\(F)\(F)\(F)Файл", chrome).items.first
+let local = Media.parseTabs(tab("1", "2", "1", "", title: "Файл"), chrome).items.first
 eq(local?.subtitle, "Chrome", "страница без сайта (файл) — без лишней точки")
 eq(Media.parseTabs("!0\(F)Executing JavaScript through AppleScript is turned off.", chrome).jsOff, true, "JS выключен в Chrome")
 eq(Media.parseTabs("!0\(F)Вы должны включить «Разрешить JavaScript из Apple Events»", safari).jsOff, true, "JS выключен в Safari (по-русски)")
@@ -106,6 +133,53 @@ si = soundItems(apps, detailed: [], muted: ["net.whatsapp", "com.gone"], me: "lo
 eq(si.map(\.appBundle), ["org.telegram", "com.google.Chrome", "net.whatsapp", "com.gone"], "выключенные видны всегда")
 check(si[2].muted && !si[2].playing && si[2].subtitle.contains("выключен"), "выключенная программа помечена")
 check(soundItems([], detailed: [], muted: [], me: "x").isEmpty, "тишина — пусто")
+si = soundItems(apps, detailed: [], muted: [], gains: ["net.whatsapp": 0.3, "org.telegram": 1], me: "local.lark")
+eq(si.map(\.appBundle), ["org.telegram", "com.google.Chrome", "net.whatsapp"], "приглушённая молчащая программа видна, чтобы вернуть громкость")
+eq(si.last?.volume, 0.3, "своя громкость программы")
+eq(si.first?.volume, 1, "по умолчанию 100%")
+
+// MARK: - Наборы, версии, время
+
+let outs = [Device(id: 1, uid: "air", name: "AirPods", transport: 0), Device(id: 2, uid: "jbl", name: "JBL", transport: 0)]
+let ins = [Device(id: 3, uid: "mac", name: "Mac", transport: 0)]
+let call = Preset(id: "1", name: "Звонок", output: "air", input: "mac", outputName: "AirPods", inputName: "Mac")
+let music2 = Preset(id: "2", name: "Музыка", output: "jbl", input: nil, outputName: "JBL", inputName: nil)
+check(Presets.isActive(call, outUID: "air", inUID: "mac"), "набор включён")
+check(!Presets.isActive(call, outUID: "jbl", inUID: "mac"), "другой выход — не включён")
+check(Presets.isActive(music2, outUID: "jbl", inUID: "anything"), "набор только для выхода")
+check(!Presets.isActive(Preset(id: "3", name: "", output: nil, input: nil), outUID: "a", inUID: "b"), "пустой набор не бывает включён")
+eq(Presets.missing(call, outputs: outs, inputs: ins), [], "всё подключено")
+eq(Presets.missing(call, outputs: [outs[1]], inputs: []), ["AirPods", "Mac"], "чего не хватает — по именам")
+eq(Presets.decode(Presets.encode([call, music2])), [call, music2], "наборы сохраняются и читаются")
+eq(Presets.decode(Data("мусор".utf8)), [], "битые настройки — без наборов")
+eq(Presets.defaultName([]), "Набор 1", "имя по умолчанию")
+eq(Presets.defaultName([Preset(id: "x", name: "Набор 2")]), "Набор 3", "имя не повторяется")
+eq(Presets.hotkeyLabel(0), "⌃⌥1", "первый набор — ⌃⌥1")
+eq(Presets.hotkeyLabel(9), nil, "десятому клавиши не хватило")
+
+check(isNewer("2.10", than: "2.9"), "2.10 новее 2.9")
+check(!isNewer("2.1", than: "2.1"), "та же версия")
+check(!isNewer("2.0.9", than: "2.1"), "старее")
+check(isNewer("3", than: "2.9.9"), "3 новее 2.9.9")
+check(!isNewer("", than: "1"), "пустой ответ — не обновление")
+check(isNewer("2.2\n", than: "2.1"), "перевод строки в файле VERSION")
+eq(clock(75), "1:15", "минуты")
+eq(clock(3725), "1:02:05", "часы")
+eq(clock(-3), "0:00", "отрицательное — ноль")
+eq(clock(.infinity), "0:00", "бесконечность — ноль")
+eq(number("12,5"), 12.5, "запятая")
+eq(number("missing value"), nil, "не число")
+
+// MARK: - Языки
+
+Lang.current = .en
+eq(Media.players[1].name, "Music", "Музыка по-английски")
+check(Media.jsHint(chrome).text.contains("View → Developer"), "подсказка по-английски")
+eq(soundItems([apps[0]], detailed: [], muted: [], me: "x").first?.subtitle, "Playing sound", "подпись по-английски")
+Lang.current = .et
+eq(soundItems([apps[0]], detailed: [], muted: ["org.telegram"], me: "x").first?.subtitle, "Larkis vaigistatud", "подпись по-эстонски")
+eq(Presets.defaultName([]), "Komplekt 1", "имя набора по-эстонски")
+Lang.current = .ru
 
 eq(outerAppPath("/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"),
    "/Applications/Google Chrome.app", "помощник Chrome → Chrome")
@@ -114,7 +188,8 @@ eq(outerAppPath("/usr/sbin/coreaudiod"), nil, "служба без .app")
 
 // MARK: - Скрипты
 
-for js in [Media.probeJS, Media.pauseJS, Media.playJS] {
+let actions: [MediaAction] = [.play, .pause, .seek(42.5), .skip(-10), .skip(10), .next, .previous, .volume(0.37), .volume(2)]
+for js in [Media.probeJS, Media.pauseJS, Media.playJS] + actions.map(Media.tabJS) {
     check(!js.contains("\"") && !js.contains("\\"), "в JS нет двойных кавычек и обратных слэшей (он внутри строки AppleScript)")
 }
 
@@ -129,8 +204,7 @@ for p in Media.players where installed(p.bundle) {
     checkedApps.append(p.name)
     compiles(Media.playerScript(p.bundle), "плеер \(p.name)")
     let it = item("p", true, bundle: p.bundle)
-    compiles(Media.setPlayingScript(it, true), "\(p.name) play")
-    compiles(Media.setPlayingScript(it, false), "\(p.name) pause")
+    for a in actions { compiles(Media.actionScript(it, a), "\(p.name) \(a)") }
     compiles(Media.revealScript(it), "\(p.name) открыть")
 }
 for b in Media.browsers where installed(b.bundle) {
@@ -138,12 +212,16 @@ for b in Media.browsers where installed(b.bundle) {
     compiles(Media.probeScript(b), "вкладки \(b.name)")
     let src: MediaItem.Source = b.isSafari ? .safariTab(window: 1, index: 2) : .chromeTab(bundle: b.bundle, window: 1, tab: 2)
     let it = MediaItem(id: "x", source: src, appBundle: b.bundle, appName: b.name, title: "", subtitle: "", playing: true)
-    compiles(Media.setPlayingScript(it, true), "\(b.name) play")
-    compiles(Media.setPlayingScript(it, false), "\(b.name) pause")
+    for a in actions where !Media.actionScript(it, a).isEmpty { compiles(Media.actionScript(it, a), "\(b.name) \(a)") }
+    eq(Media.actionScript(it, .next), "", "у вкладки нет «следующего трека»")
     compiles(Media.revealScript(it), "\(b.name) открыть вкладку")
 }
 eq(Media.setPlayingScript(MediaItem(id: "s", source: .sound(bundle: "t"), appBundle: "t", appName: "", title: "", subtitle: "",
                                     playing: true), false), "", "звук программ — не скриптом")
+check(Media.actionScript(item("p", true, bundle: Media.spotify), .volume(2)).hasSuffix("to 100"), "громкость не больше 100")
+check(Media.actionScript(item("p", true, bundle: Media.spotify), .seek(-5)).hasSuffix("to 0.00"), "перемотка не раньше начала")
+check(Media.playerScript(Media.spotify).contains("artwork url"), "обложку спрашиваем только у Spotify")
+check(!Media.playerScript("com.apple.Music").contains("artwork url"), "у Музыки такого свойства нет")
 
 // MARK: - JavaScript в настоящем WebKit
 
@@ -205,18 +283,34 @@ MainActor.assumeIsolated {
     <link rel="icon" href="/fav-16.png" sizes="16x16"><link rel="icon" href="/fav-96.png" sizes="96x96">
     <link rel="apple-touch-icon" href="/apple.png"></head>
     <body><audio id="a" src="\(wav)" autoplay></audio>
-    <script>navigator.mediaSession.metadata = new MediaMetadata({title: 'Песня', artist: 'Певец'});</script></body></html>
+    <script>navigator.mediaSession.metadata = new MediaMetadata({title: 'Песня', artist: 'Певец',
+      artwork: [{src: '/cover-96.jpg', sizes: '96x96'}, {src: '/cover-512.jpg', sizes: '512x512'}]});</script></body></html>
     """)
     // В тестовом окне звук «играет», но время не идёт (вывода звука нет) — перематываем вручную, как будто послушали 5 секунд
     w.wait(5) { w.js("var a=document.getElementById('a');a.play();a.currentTime=5;a.paused?'':'y'") == "y" }
     var r = w.js(Media.probeJS).components(separatedBy: F)
-    eq(r.count, 4, "ответ вкладки из 4 частей (\(r))")
-    if r.count == 4 {
+    eq(r.count, 8, "ответ вкладки из 8 частей (\(r))")
+    if r.count == 8 {
         eq(r[0], "1", "звук играет")
         eq(r[1], "example.com", "сайт без www")
         eq(r[2], "https://www.example.com/apple.png", "выбран самый крупный значок (apple-touch-icon 180 > 96)")
-        eq(r[3], "Песня — Певец", "название из mediaSession")
+        eq(r[3], "https://www.example.com/cover-512.jpg", "обложка — самая крупная из mediaSession")
+        eq(r[4], "5.0", "позиция")
+        eq(r[5], "30.0", "длина")
+        eq(r[6], "1.00", "громкость")
+        eq(r[7], "Песня — Певец", "название из mediaSession")
     }
+    @MainActor func t(_ id: String) -> Double { Double(w.js("String(document.getElementById('\(id)').currentTime)")) ?? -1 }
+    _ = w.js(Media.tabJS(.seek(12)))
+    check(abs(t("a") - 12) < 0.5, "перемотка во вкладке (\(t("a")))")
+    _ = w.js(Media.tabJS(.skip(10)))
+    check(abs(t("a") - 22) < 0.5, "+10 секунд (\(t("a")))")
+    _ = w.js(Media.tabJS(.skip(-30)))
+    check(t("a") < 0.5, "−30 не раньше начала (\(t("a")))")
+    _ = w.js(Media.tabJS(.volume(0.25)))
+    eq(w.js(Media.probeJS).components(separatedBy: F).dropFirst(6).first, "0.25", "громкость вкладки")
+    _ = w.js(Media.tabJS(.volume(1)))
+    _ = w.js("document.getElementById('a').currentTime=5;''")
     _ = w.js(Media.pauseJS)
     w.sleep(0.3)
     eq(w.js(Media.probeJS).components(separatedBy: F).first, "0", "после паузы — на паузе, но в списке")
@@ -231,8 +325,35 @@ MainActor.assumeIsolated {
     w.wait(5) { w.js("var v=document.getElementById('v');v.currentTime=5;v.pause();v.paused&&v.currentTime>1?'y':''") == "y" }
     r = w.js(Media.probeJS).components(separatedBy: F)
     eq(r.first, "0", "начатое видео на паузе — в списке, можно продолжить")
-    eq(r.count == 4 ? r[2] : "", "https://www.example.com/favicon.ico", "запасной значок /favicon.ico")
-    eq(r.count == 4 ? r[3] : "", "Видео", "название — заголовок страницы")
+    eq(r.count == 8 ? r[2] : "", "https://www.example.com/favicon.ico", "запасной значок /favicon.ico")
+    eq(r.count == 8 ? r[3] : "x", "", "без mediaSession и og:image — без обложки")
+    eq(r.count == 8 ? r[7] : "", "Видео", "название — заголовок страницы")
+
+    // Страница видео с og:image (как YouTube без mediaSession) — превью; og:image у статьи — не превью
+    w.load("""
+    <html><head><title>Ролик</title><meta property="og:type" content="video.other"><meta property="og:image" content="/thumb.jpg"></head>
+    <body><video id="v" src="\(wav)"></video></body></html>
+    """)
+    w.wait(5) { w.js("var v=document.getElementById('v');v.currentTime=5;v.paused&&v.currentTime>1?'y':''") == "y" }
+    r = w.js(Media.probeJS).components(separatedBy: F)
+    eq(r.count == 8 ? r[3] : "", "https://www.example.com/thumb.jpg", "превью видео из og:image")
+    w.load("""
+    <html><head><title>Статья</title><meta property="og:type" content="article"><meta property="og:image" content="/logo.jpg"></head>
+    <body><video id="v" src="\(wav)"></video></body></html>
+    """)
+    w.wait(5) { w.js("var v=document.getElementById('v');v.currentTime=5;v.paused&&v.currentTime>1?'y':''") == "y" }
+    r = w.js(Media.probeJS).components(separatedBy: F)
+    eq(r.count == 8 ? r[3] : "x", "", "картинка статьи — не превью")
+
+    // Два ролика: главный — играющий, а не самый длинный на паузе
+    w.load("""
+    <html><body><video id="long" src="\(wav)"></video><audio id="short" src="\(silentWav(seconds: 10))" autoplay></audio></body></html>
+    """)
+    w.wait(5) { w.js("var s=document.getElementById('short');s.play();s.paused?'':'y'") == "y" }
+    _ = w.js(Media.tabJS(.volume(0.5)))
+    eq(w.js("String(document.getElementById('long').volume)"), "0.5", "громкость — всем роликам вкладки")
+    _ = w.js(Media.tabJS(.seek(3)))
+    check(abs(t("short") - 3) < 0.5, "перемотка — играющему ролику (\(t("short")))")
 
     // Беззвучный ролик (как превью в ленте Facebook) и страница без медиа — не показываем
     w.load("""

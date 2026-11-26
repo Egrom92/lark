@@ -1,4 +1,4 @@
-// Рисует значок Lark: поющий жаворонок на фоне рассвета, из клюва — звуковые волны.
+// Рисует значок Lark: тёмный поющий жаворонок на ярком тёплом фоне, из клюва — белые звуковые волны.
 // Использование: swift scripts/make-icon.swift <out.iconset> [preview.png]
 // Затем: iconutil -c icns <out.iconset> -o Resources/AppIcon.icns
 import AppKit
@@ -36,68 +36,55 @@ func render(_ px: Int) -> Data {
         return path
     }
 
-    // Фон — небо на рассвете: синий сверху, к низу розовый и оранжевый.
+    // Фон — яркий тёплый рассвет: жёлтый сверху, оранжевый снизу. Птица — тёмный силуэт, волны — белые: читается и в 16 px.
     let bg = NSBezierPath(roundedRect: box, xRadius: w * 0.225, yRadius: w * 0.225)
-    NSGradient(colors: [rgb(0.98, 0.62, 0.34), rgb(0.86, 0.38, 0.50), rgb(0.33, 0.25, 0.62), rgb(0.16, 0.17, 0.42)],
-               atLocations: [0, 0.32, 0.72, 1], colorSpace: .sRGB)!.draw(in: bg, angle: 90)
+    NSGradient(colors: [rgb(0.99, 0.43, 0.22), rgb(1.0, 0.62, 0.25), rgb(1.0, 0.80, 0.33)],
+               atLocations: [0, 0.55, 1], colorSpace: .sRGB)!.draw(in: bg, angle: 90)
     NSGraphicsContext.saveGraphicsState()
     bg.addClip()
 
-    // Солнце, встающее из-за края.
-    rgb(1.0, 0.86, 0.55, 0.9).setFill()
-    NSBezierPath(ovalIn: NSRect(x: p(0.5, 0).x - 0.34 * w, y: p(0, 0).y - 0.2 * w, width: 0.68 * w, height: 0.68 * w)).fill()
+    let navy = rgb(0.12, 0.13, 0.27), wing = rgb(0.22, 0.24, 0.43), cream = rgb(1.0, 0.95, 0.86)
 
-    // Ветка.
-    let branch = NSBezierPath()
-    branch.move(to: p(-0.05, 0.215)); branch.curve(to: p(0.78, 0.235), controlPoint1: p(0.25, 0.17), controlPoint2: p(0.55, 0.26))
-    branch.lineWidth = w * 0.045; branch.lineCapStyle = .round
-    rgb(0.30, 0.18, 0.20).setStroke(); branch.stroke()
-
-    let brown = rgb(0.47, 0.32, 0.23), dark = rgb(0.33, 0.22, 0.17), cream = rgb(0.99, 0.92, 0.80)
-
-    // Хвост, тело, грудка, крыло.
-    dark.setFill(); poly([(0.20, 0.40), (0.04, 0.49), (0.09, 0.33)]).fill()
-    let body = oval(0.38, 0.39, 0.24, 0.17, rotate: 22)
-    brown.setFill(); body.fill()
-    NSGraphicsContext.saveGraphicsState(); body.addClip()
-    cream.setFill(); oval(0.47, 0.32, 0.17, 0.12, rotate: 30).fill()
+    // Мягкая тень под птицей — отделяет её от фона.
+    NSGraphicsContext.saveGraphicsState()
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor(srgbRed: 0.45, green: 0.12, blue: 0.0, alpha: 0.35)
+    shadow.shadowBlurRadius = w * 0.04
+    shadow.shadowOffset = NSSize(width: 0, height: -w * 0.015)
+    shadow.set()
+    let cg = NSGraphicsContext.current!.cgContext
+    cg.beginTransparencyLayer(auxiliaryInfo: nil)   // тень у силуэта целиком, без швов между частями
+    navy.setFill()
+    poly([(0.24, 0.42), (0.07, 0.52), (0.11, 0.31)]).fill()        // хвост
+    oval(0.40, 0.40, 0.24, 0.185, rotate: 22).fill()              // тело
+    oval(0.575, 0.58, 0.13, 0.13).fill()                           // голова
+    poly([(0.47, 0.66), (0.37, 0.75), (0.54, 0.70)]).fill()        // хохолок, назад
+    cg.endTransparencyLayer()
     NSGraphicsContext.restoreGraphicsState()
-    dark.setFill(); oval(0.32, 0.43, 0.15, 0.075, rotate: 15).fill()
-    // Лапки.
-    for x in [0.37, 0.45] as [CGFloat] {
-        let leg = NSBezierPath(); leg.move(to: p(x, 0.27)); leg.line(to: p(x - 0.01, 0.215))
-        leg.lineWidth = w * 0.022; leg.lineCapStyle = .round; rgb(0.95, 0.60, 0.25).setStroke(); leg.stroke()
-    }
 
-    // Голова с хохолком (у жаворонка он есть).
-    brown.setFill()
-    for (base, tip) in [((0.47, 0.66), (0.37, 0.75)), ((0.51, 0.69), (0.42, 0.79))] as [((CGFloat, CGFloat), (CGFloat, CGFloat))] {
-        let crest = NSBezierPath()
-        crest.move(to: p(base.0 - 0.03, base.1 - 0.02))
-        crest.curve(to: p(tip.0, tip.1), controlPoint1: p(base.0 - 0.02, base.1 + 0.04), controlPoint2: p(tip.0 + 0.04, tip.1 + 0.01))
-        crest.curve(to: p(base.0 + 0.05, base.1 - 0.01), controlPoint1: p(tip.0 + 0.06, tip.1 - 0.02), controlPoint2: p(base.0 + 0.03, base.1 + 0.02))
-        crest.close(); crest.fill()
-    }
-    oval(0.56, 0.58, 0.125, 0.125).fill()
-    cream.setFill(); oval(0.615, 0.525, 0.05, 0.035, rotate: 20).fill()
+    // Грудка и крыло.
+    let body = oval(0.40, 0.40, 0.24, 0.185, rotate: 22)
+    NSGraphicsContext.saveGraphicsState(); body.addClip()
+    cream.setFill(); oval(0.50, 0.31, 0.18, 0.12, rotate: 30).fill()
+    NSGraphicsContext.restoreGraphicsState()
+    wing.setFill(); oval(0.33, 0.44, 0.15, 0.072, rotate: 14).fill()
 
     // Глаз.
-    NSColor.white.setFill(); oval(0.595, 0.615, 0.032, 0.032).fill()
-    rgb(0.10, 0.08, 0.12).setFill(); oval(0.602, 0.615, 0.02, 0.02).fill()
+    NSColor.white.setFill(); oval(0.605, 0.61, 0.035, 0.035).fill()
+    navy.setFill(); oval(0.614, 0.607, 0.02, 0.02).fill()
 
     // Открытый клюв — поёт.
-    let beak = rgb(0.98, 0.70, 0.26)
+    let beak = rgb(0.80, 0.18, 0.14)
     beak.setFill()
-    poly([(0.665, 0.62), (0.79, 0.615), (0.67, 0.575)]).fill()
-    poly([(0.67, 0.565), (0.77, 0.525), (0.665, 0.545)]).fill()
+    poly([(0.68, 0.62), (0.79, 0.60), (0.685, 0.574)]).fill()
+    poly([(0.685, 0.562), (0.77, 0.52), (0.68, 0.54)]).fill()
 
     // Звуковые волны из клюва.
-    for (i, r) in ([0.085, 0.14, 0.195] as [CGFloat]).enumerated() {
+    for (i, r) in ([0.065, 0.115, 0.165] as [CGFloat]).enumerated() {
         let arc = NSBezierPath()
-        let c = p(0.745, 0.57)
-        arc.appendArc(withCenter: c, radius: r * w, startAngle: -38, endAngle: 38)
-        arc.lineWidth = w * 0.034; arc.lineCapStyle = .round
-        NSColor(white: 1, alpha: [1.0, 0.8, 0.55][i]).setStroke(); arc.stroke()
+        arc.appendArc(withCenter: p(0.775, 0.57), radius: r * w, startAngle: -42, endAngle: 42)
+        arc.lineWidth = w * 0.042; arc.lineCapStyle = .round
+        NSColor(white: 1, alpha: [1.0, 0.9, 0.75][i]).setStroke(); arc.stroke()
     }
 
     NSGraphicsContext.restoreGraphicsState()

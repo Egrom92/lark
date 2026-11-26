@@ -1,9 +1,7 @@
-// Lark — звук, микрофон и «что сейчас играет» из строки меню.
-// Щелчок по значку открывает панель: слева выходы звука, справа микрофоны (с громкостью),
-// ниже — что играет сейчас: Spotify, Музыка и отдельные вкладки Chrome/Safari с кнопкой паузы у каждой.
-// «Держать»: если macOS сама переключит устройство (например, при подключении AirPods),
-// Lark сразу вернёт выбранное. Когда закреплённое устройство отключено, macOS выбирает сама,
-// а как только оно снова появится — Lark вернёт его.
+// Lark — звук, микрофон и всё, что играет, из строки меню.
+// Панель: слева выходы звука, справа микрофоны (с громкостью), под ними наборы «выход + микрофон» (⌃⌥1…9),
+// ниже — что играет: Spotify, Музыка, вкладки браузеров (обложка, время, перемотка, громкость), Telegram/Zoom и др.
+// «Держать»: если macOS сама переключит устройство (например, при подключении AirPods), Lark вернёт выбранное.
 import AppKit
 import CoreAudio
 import AudioToolbox
@@ -150,8 +148,7 @@ final class Keeper {
 
     func enforceAll() { enforce(.input); enforce(.output) }
 }
-
-// MARK: - Скрытые устройства и короткие имена
+// MARK: - Скрытые устройства
 
 enum Hidden {
     static let key = "hiddenUIDs"
@@ -159,7 +156,7 @@ enum Hidden {
     static func set(_ s: Set<String>) { UserDefaults.standard.set(Array(s), forKey: key) }
 }
 
-// MARK: - Модель устройств
+// MARK: - Модель устройств и наборов
 
 @MainActor
 final class AudioModel: ObservableObject {
@@ -174,6 +171,11 @@ final class AudioModel: ObservableObject {
     @Published var keepIn = false
     @Published var hidden: Set<String> = Hidden.uids
     @Published var loginOn = false
+    @Published var presets: [Preset] = Presets.decode(UserDefaults.standard.data(forKey: Presets.key))
+    @Published var langTick = 0                  // смена языка — перерисовать панель
+    @Published var update: String? = Updater.available
+    @Published var updateNote: String?           // «У вас последняя версия», «Обновляю…»
+    var onPresetsChanged: () -> Void = {}
 
     func refresh() {
         outputs = Audio.devices(.output)
@@ -195,13 +197,11 @@ final class AudioModel: ObservableObject {
 
     func all(_ dir: Dir) -> [Device] { dir == .output ? outputs : inputs }
     func current(_ dir: Dir) -> AudioDeviceID { dir == .output ? curOut : curIn }
+    func currentDevice(_ dir: Dir) -> Device? { all(dir).first { $0.id == current(dir) } }
     func keeps(_ dir: Dir) -> Bool { dir == .output ? keepOut : keepIn }
     func volume(_ dir: Dir) -> Float? { dir == .output ? outVol : inVol }
 
-    /// Скрытые не показываем, кроме выбранного сейчас.
-    func visible(_ dir: Dir) -> [Device] {
-        visibleDevices(all(dir), hidden: hidden, current: current(dir))
-    }
+    func visible(_ dir: Dir) -> [Device] { visibleDevices(all(dir), hidden: hidden, current: current(dir)) }
 
     func choose(_ dir: Dir, _ d: Device) {
         keeper.choose(dir, d)
@@ -214,25 +214,80 @@ final class AudioModel: ObservableObject {
         if dir == .output { outVol = v } else { inVol = v }
     }
 
+    /// Колесо над значком: шаг как у клавиш громкости (1/16) для мыши, плавно для трекпада. Возвращает новую громкость.
+    func nudgeOutput(_ delta: Float) -> Float? {
+        guard let v = Audio.volume(Audio.defaultDevice(.output), .output) else { return nil }
+        let n = max(0, min(1, v + delta))
+        Audio.setVolume(Audio.defaultDevice(.output), .output, n)
+        outVol = n
+        return n
+    }
+
     func toggleKeep(_ dir: Dir) { keeper.setKeeps(dir, !keeper.keeps(dir)); refresh() }
 
     func hide(_ d: Device) { var h = Hidden.uids; h.insert(d.uid); Hidden.set(h); refresh() }
     func unhideAll() { Hidden.set([]); refresh() }
 
-    /// «AirPods Pro не подключены — вернутся сами»
     func missingNote(_ dir: Dir) -> String? {
         guard keeps(dir), let uid = keeper.pinnedUID(dir), !all(dir).contains(where: { $0.uid == uid }) else { return nil }
-        let name = UserDefaults.standard.string(forKey: dir.pinKey + ".name") ?? "Выбранное устройство"
-        return "\(name) не подключено — вернётся само"
+        let name = UserDefaults.standard.string(forKey: dir.pinKey + ".name") ?? tr("Выбранное устройство", "Your device", "Valitud seade")
+        return tr("\(name) не подключено — вернётся само", "\(name) is disconnected — Lark will switch back when it returns",
+                  "\(name) pole ühendatud — Lark lülitub tagasi, kui see ilmub")
     }
 
     func toggleLogin() {
         if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister() } else { try? SMAppService.mainApp.register() }
         refresh()
     }
+
+    // MARK: Наборы
+
+    private func savePresets() {
+        UserDefaults.standard.set(Presets.encode(presets), forKey: Presets.key)
+        onPresetsChanged()
+    }
+
+    func addPreset(_ name: String) {
+        let o = currentDevice(.output), i = currentDevice(.input)
+        let n = name.trimmingCharacters(in: .whitespaces)
+        presets.append(Preset(id: UUID().uuidString, name: n.isEmpty ? Presets.defaultName(presets) : n,
+                              output: o?.uid, input: i?.uid, outputName: o?.name, inputName: i?.name))
+        savePresets()
+    }
+
+    func overwritePreset(_ p: Preset) {
+        guard let k = presets.firstIndex(where: { $0.id == p.id }) else { return }
+        let o = currentDevice(.output), i = currentDevice(.input)
+        presets[k].output = o?.uid; presets[k].outputName = o?.name
+        presets[k].input = i?.uid; presets[k].inputName = i?.name
+        savePresets()
+    }
+
+    func deletePreset(_ p: Preset) { presets.removeAll { $0.id == p.id }; savePresets() }
+
+    func movePreset(_ p: Preset, by d: Int) {
+        guard let k = presets.firstIndex(where: { $0.id == p.id }), presets.indices.contains(k + d) else { return }
+        presets.swapAt(k, k + d)
+        savePresets()
+    }
+
+    /// Включить набор: выход и микрофон (то, что подключено). Возвращает, чего не хватило.
+    @discardableResult
+    func applyPreset(_ p: Preset) -> [String] {
+        refresh()
+        let missing = Presets.missing(p, outputs: outputs, inputs: inputs)
+        if let o = p.output, let d = outputs.first(where: { $0.uid == o }) { keeper.choose(.output, d) }
+        if let i = p.input, let d = inputs.first(where: { $0.uid == i }) { keeper.choose(.input, d) }
+        refresh()
+        return missing
+    }
+
+    func isActive(_ p: Preset) -> Bool {
+        Presets.isActive(p, outUID: currentDevice(.output)?.uid, inUID: currentDevice(.input)?.uid)
+    }
 }
 
-// MARK: - Что сейчас играет: запуск скриптов, программы со звуком, выключение звука
+// MARK: - Что сейчас играет: запуск скриптов, программы со звуком
 
 /// AppleScript через osascript: отдельный процесс, не подвешивает Lark, если браузер думает.
 enum OSA {
@@ -282,9 +337,10 @@ enum SoundApps {
     /// Программы и объекты их процессов: (программа, все её процессы со звуком).
     static func list() -> [(app: SoundApp, objs: [AudioObjectID])] {
         var order: [String] = [], byBundle: [String: (app: SoundApp, objs: [AudioObjectID])] = [:]
+        let invisible = CharacterSet(charactersIn: "\u{200E}\u{200F}\u{202A}\u{202C}").union(.whitespaces)
         for p in processes() {
             guard let app = owner(p.pid), let b = app.bundleIdentifier else { continue }
-            let name = (app.localizedName ?? b).trimmingCharacters(in: CharacterSet(charactersIn: "\u{200E}\u{200F}\u{202A}\u{202C}").union(.whitespaces))
+            let name = (app.localizedName ?? b).trimmingCharacters(in: invisible)
             if let cur = byBundle[b] {
                 byBundle[b] = (SoundApp(bundle: b, name: name, outputting: cur.app.outputting || p.outputting), cur.objs + [p.obj])
             } else {
@@ -296,63 +352,23 @@ enum SoundApps {
     }
 }
 
-/// Выключает звук программы: Core Audio tap с muteBehavior = .muted на всех её процессах.
-/// Пока tap жив (и прокручивается через приватное устройство), программа играет «в тишину».
-/// Нужен доступ «Запись системного звука»; при закрытии Lark звук возвращается сам.
-final class SoundMute {
-    private var tapID = AudioObjectID(kAudioObjectUnknown)
-    private var aggID = AudioObjectID(kAudioObjectUnknown)
-    private var ioProc: AudioDeviceIOProcID?
-    let objs: [AudioObjectID]
-
-    init?(objs: [AudioObjectID]) {
-        self.objs = objs
-        let desc = CATapDescription(stereoMixdownOfProcesses: objs)
-        desc.uuid = UUID()
-        desc.name = "Lark mute"
-        desc.isPrivate = true
-        desc.muteBehavior = .muted
-        guard AudioHardwareCreateProcessTap(desc, &tapID) == noErr, tapID != kAudioObjectUnknown else { return nil }
-        let out = Audio.defaultDevice(.output)
-        guard let clock = Audio.string(out, kAudioDevicePropertyDeviceUID) else { stop(); return nil }
-        let agg: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "Lark mute",
-            kAudioAggregateDeviceUIDKey: "Lark-mute-\(UUID().uuidString)",
-            kAudioAggregateDeviceMainSubDeviceKey: clock,
-            kAudioAggregateDeviceIsPrivateKey: true,
-            kAudioAggregateDeviceIsStackedKey: false,
-            kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: clock]],
-            kAudioAggregateDeviceTapListKey: [[kAudioSubTapDriftCompensationKey: true, kAudioSubTapUIDKey: desc.uuid.uuidString]],
-        ]
-        guard AudioHardwareCreateAggregateDevice(agg as CFDictionary, &aggID) == noErr else { stop(); return nil }
-        let st = AudioDeviceCreateIOProcIDWithBlock(&ioProc, aggID, nil) { _, _, _, outData, _ in
-            for b in UnsafeMutableAudioBufferListPointer(outData) { if let d = b.mData { memset(d, 0, Int(b.mDataByteSize)) } }
-        }
-        guard st == noErr, AudioDeviceStart(aggID, ioProc) == noErr else { stop(); return nil }
-    }
-
-    func stop() {
-        if let ioProc { AudioDeviceStop(aggID, ioProc); AudioDeviceDestroyIOProcID(aggID, ioProc) }
-        ioProc = nil
-        if aggID != kAudioObjectUnknown { AudioHardwareDestroyAggregateDevice(aggID); aggID = kAudioObjectUnknown }
-        if tapID != kAudioObjectUnknown { AudioHardwareDestroyProcessTap(tapID); tapID = kAudioObjectUnknown }
-    }
-
-    deinit { stop() }
-}
-
 enum MediaProbe {
-    static func running(_ bundle: String) -> Bool { !NSRunningApplication.runningApplications(withBundleIdentifier: bundle).isEmpty }
+    /// Какие программы запущены. Только с главного потока: список NSWorkspace обновляется там, а из фонового потока
+    /// (особенно сразу после запуска Lark) бывает неполным — тогда Chrome «не запущен» и вкладки пропадают.
+    @MainActor static func runningBundles() -> Set<String> {
+        Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+    }
 
     /// Всё, что играет: треки плееров, вкладки браузеров, остальные программы со звуком.
-    static func collect(muted: Set<String>) -> (items: [MediaItem], hints: [Hint], sound: [(app: SoundApp, objs: [AudioObjectID])]) {
+    static func collect(muted: Set<String>, gains: [String: Double] = [:], running: Set<String>)
+        -> (items: [MediaItem], hints: [Hint], sound: [(app: SoundApp, objs: [AudioObjectID])]) {
         var items: [MediaItem] = [], hints: [Hint] = []
-        for p in Media.players where running(p.bundle) {
+        for p in Media.players where running.contains(p.bundle) {
             let r = OSA.run(Media.playerScript(p.bundle))
             if Media.notPermitted(r.err) { hints.append(Media.deniedHint(p.name)); continue }
             if let item = Media.parsePlayer(r.out, bundle: p.bundle, name: p.name) { items.append(item) }
         }
-        for b in Media.browsers where running(b.bundle) {
+        for b in Media.browsers where running.contains(b.bundle) {
             let r = OSA.run(Media.probeScript(b))
             if Media.notPermitted(r.err) { hints.append(Media.deniedHint(b.name)); continue }
             let parsed = Media.parseTabs(r.out, b)
@@ -360,19 +376,21 @@ enum MediaProbe {
             if parsed.jsOff { hints.append(Media.jsHint(b)) }
         }
         let sound = SoundApps.list()
-        var extra = soundItems(sound.map(\.app), detailed: items, muted: muted, me: Bundle.main.bundleIdentifier ?? "local.lark")
-        for i in extra.indices where extra[i].title == extra[i].appBundle {   // выключенная и замолчавшая — имя по бандлу
+        var extra = soundItems(sound.map(\.app), detailed: items, muted: muted, gains: gains,
+                               me: Bundle.main.bundleIdentifier ?? "local.lark")
+        for i in extra.indices where extra[i].title == extra[i].appBundle {   // программа закрылась — имя по бандлу
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: extra[i].appBundle) {
                 let name = FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
                 let e = extra[i]
                 extra[i] = MediaItem(id: e.id, source: e.source, appBundle: e.appBundle, appName: name, title: name,
-                                     subtitle: e.subtitle, playing: e.playing, iconURL: nil, muted: e.muted)
+                                     subtitle: e.subtitle, playing: e.playing, muted: e.muted, volume: e.volume)
             }
         }
         return (playingFirst(items + extra), hints, sound)
     }
 
-    static func setPlaying(_ item: MediaItem, _ play: Bool) { _ = OSA.run(Media.setPlayingScript(item, play)) }
+    static func perform(_ item: MediaItem, _ a: MediaAction) { _ = OSA.run(Media.actionScript(item, a)) }
+    static func setPlaying(_ item: MediaItem, _ play: Bool) { perform(item, play ? .play : .pause) }
     static func reveal(_ item: MediaItem) { _ = OSA.run(Media.revealScript(item)) }
 }
 
@@ -386,9 +404,13 @@ final class MediaModel: ObservableObject {
     private var busy = false
     private var pending = false
     private var generation = 0                      // действие пользователя делает старые ответы опроса устаревшими
-    private var mutes: [String: SoundMute] = [:]    // программа → её tap «без звука»
+    private var muted: Set<String> = []             // программы, выключенные кнопкой с динамиком
+    private var gains: [String: Double] = [:]       // своя громкость программ (Zoom, Teams…)
+    private var taps: [String: AppVolume] = [:]     // программа → её перехват звука
     private var soundObjs: [String: [AudioObjectID]] = [:]
-    private var muteHint: Hint?
+    private var tapHint: Hint?
+    private var volumeSends: [String: DispatchWorkItem] = [:]
+    var onReveal: () -> Void = {}
 
     func start() {
         refresh()
@@ -404,15 +426,15 @@ final class MediaModel: ObservableObject {
         guard !busy else { pending = true; return }
         busy = true
         let gen = generation
-        let muted = Set(mutes.keys)
+        let m = muted, g = gains, run = MediaProbe.runningBundles()
         queue.async {
-            let r = MediaProbe.collect(muted: muted)
+            let r = MediaProbe.collect(muted: m, gains: g, running: run)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     if gen == self.generation {
                         self.items = r.items
-                        self.hints = r.hints + (self.muteHint.map { [$0] } ?? [])
-                        self.soundObjs = Dictionary(r.sound.map { ($0.app.bundle, $0.objs) }, uniquingKeysWith: { a, _ in a })
+                        self.hints = r.hints + (self.tapHint.map { [$0] } ?? [])
+                        for s in r.sound { self.soundObjs[s.app.bundle] = s.objs }
                         self.loaded = true
                     }
                     self.busy = false
@@ -426,134 +448,212 @@ final class MediaModel: ObservableObject {
         generation += 1
         queue.async {
             work()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { MainActor.assumeIsolated { self.refresh() } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { MainActor.assumeIsolated { self.refresh() } }
         }
     }
 
-    private func mark(_ id: String, _ playing: Bool) {
-        if let i = items.firstIndex(where: { $0.id == id }) { items[i].playing = playing }
+    private func update(_ id: String, _ change: (inout MediaItem) -> Void) {
+        if let i = items.firstIndex(where: { $0.id == id }) { change(&items[i]) }
     }
 
-    func toggle(_ item: MediaItem) {
-        if item.isSoundOnly { toggleMute(item); return }
-        let play = !item.playing
-        mark(item.id, play)
-        act { MediaProbe.setPlaying(item, play) }
+    /// Действие над строкой: сразу показываем результат, потом шлём программе и перепроверяем.
+    func perform(_ item: MediaItem, _ a: MediaAction) {
+        if item.isSoundOnly {
+            switch a {
+            case .volume(let v): setAppGain(item.appBundle, v)
+            case .play, .pause: toggleMute(item)
+            default: break
+            }
+            return
+        }
+        let now = Date()
+        update(item.id) { it in
+            let live = it.livePosition(at: now)
+            switch a {
+            case .play: it.position = live; it.playing = true
+            case .pause: it.position = live; it.playing = false
+            case .seek(let s): it.position = max(0, min(s, it.duration ?? s))
+            case .skip(let d): it.position = max(0, min((live ?? 0) + d, it.duration ?? .infinity))
+            case .volume(let v): it.volume = v
+            case .next, .previous: break
+            }
+            it.fetchedAt = now
+        }
+        act { MediaProbe.perform(item, a) }
     }
 
-    /// Выключить или вернуть звук программы, которой нельзя поставить паузу (Telegram, WhatsApp, игры…).
+    func toggle(_ item: MediaItem) { perform(item, item.isSoundOnly ? .pause : (item.playing ? .pause : .play)) }
+
+    /// Ползунок громкости строки: сразу на экране, программе — когда рука остановилась (не сотни скриптов в секунду).
+    func setVolume(_ item: MediaItem, _ v: Double) {
+        if item.isSoundOnly { setAppGain(item.appBundle, v); return }
+        generation += 1
+        update(item.id) { $0.volume = v }
+        volumeSends[item.id]?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.perform(item, .volume(v)) }
+        volumeSends[item.id] = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
+    }
+
+    // MARK: Звук программ (Telegram, Zoom, Teams…)
+
+    private func applyTap(_ b: String) -> Bool {
+        let eff = muted.contains(b) ? 0 : (gains[b] ?? 1)
+        if eff >= 0.999 {
+            taps.removeValue(forKey: b)?.stop()
+            return true
+        }
+        if let t = taps[b] { t.gain = Float(eff); return true }
+        guard let objs = soundObjs[b], let t = AppVolume(objs: objs, gain: Float(eff)) else {
+            tapHint = Hint(id: "tap", text: tr("Чтобы менять громкость программ, разрешите Lark «Запись экрана и системного звука → Только системный звук».",
+                                               "To control app volume, allow Lark in Screen & System Audio Recording → System Audio Recording Only.",
+                                               "Programmide helitugevuse muutmiseks lubage Lark jaotises Ekraani ja süsteemiheli salvestamine → Ainult süsteemiheli."),
+                           openPrivacy: true)
+            hints.removeAll { $0.id == "tap" }
+            hints.append(tapHint!)
+            return false
+        }
+        tapHint = nil
+        hints.removeAll { $0.id == "tap" }
+        taps[b] = t
+        return true
+    }
+
+    func setAppGain(_ b: String, _ v: Double) {
+        gains[b] = v
+        if v > 0.001 { muted.remove(b) }
+        update("sound:\(b)") { $0.volume = v; if v > 0.001 { $0.muted = false } }
+        if !applyTap(b) { gains[b] = 1; update("sound:\(b)") { $0.volume = 1 } }
+        generation += 1
+    }
+
+    /// Выключить или вернуть звук программы, которой нельзя поставить паузу.
     func toggleMute(_ item: MediaItem) {
         let b = item.appBundle
-        if let m = mutes.removeValue(forKey: b) {
-            m.stop()
-        } else if let objs = soundObjs[b], let m = SoundMute(objs: objs) {
-            mutes[b] = m
-            muteHint = nil
-        } else {
-            muteHint = Hint(id: "mute", text: "Чтобы выключать звук программ, разрешите Lark «Запись экрана и системного звука → Только системный звук».", openPrivacy: true)
+        if muted.contains(b) { muted.remove(b) } else { muted.insert(b) }
+        if !applyTap(b) { muted.remove(b) }
+        let isMuted = muted.contains(b)
+        update(item.id) {
+            $0.muted = isMuted
+            $0.playing = !isMuted && $0.subtitle != tr("Молчит", "Silent", "Vaikne")
+            $0.subtitle = isMuted ? tr("Звук выключен в Lark", "Muted in Lark", "Larkis vaigistatud") : tr("Играет звук", "Playing sound", "Mängib heli")
         }
         generation += 1
         refresh()
     }
 
+    /// Выход звука сменился: перехваты привязаны к старому устройству — пересоздать на новом.
+    func rebuildTaps() {
+        let list = Array(taps.keys)
+        for b in list { taps.removeValue(forKey: b)?.stop() }
+        for b in list { _ = applyTap(b) }
+    }
+
+    func unmuteAll() { for t in taps.values { t.stop() }; taps.removeAll(); muted.removeAll(); gains.removeAll() }
+
     /// Пауза (или «без звука») на всём остальном, играет только это.
     func solo(_ item: MediaItem) {
-        let others = items.filter { $0.playing && $0.id != item.id }
-        for o in others where o.isSoundOnly { toggleMute(o) }
-        if item.isSoundOnly, item.muted { toggleMute(item) }
-        let pausable = others.filter { !$0.isSoundOnly }
-        for o in pausable { mark(o.id, false) }
-        if !item.isSoundOnly { mark(item.id, true) }
-        act {
-            for o in pausable { MediaProbe.setPlaying(o, false) }
-            if !item.isSoundOnly { MediaProbe.setPlaying(item, true) }
-        }
+        for o in items where o.playing && o.id != item.id { o.isSoundOnly ? toggleMute(o) : perform(o, .pause) }
+        if item.isSoundOnly { if item.muted { toggleMute(item) } } else if !item.playing { perform(item, .play) }
     }
 
+    /// «Пауза везде». Второе нажатие (пока ничего не играет) — вернуть то, что было поставлено на паузу этой кнопкой.
+    private var pausedByAll: [MediaItem] = []
     func pauseAll() {
         let playing = items.filter(\.playing)
-        for p in playing where p.isSoundOnly { toggleMute(p) }
-        let pausable = playing.filter { !$0.isSoundOnly }
-        for p in pausable { mark(p.id, false) }
-        act { for p in pausable { MediaProbe.setPlaying(p, false) } }
+        if playing.isEmpty {
+            for p in pausedByAll { p.isSoundOnly ? toggleMute(p) : perform(p, .play) }
+            pausedByAll = []
+            return
+        }
+        pausedByAll = playing
+        for p in playing { p.isSoundOnly ? toggleMute(p) : perform(p, .pause) }
     }
-
-    var onReveal: () -> Void = {}
+    var canResumeAll: Bool { !anyPlaying && !pausedByAll.isEmpty }
 
     func reveal(_ item: MediaItem) {
         onReveal()
         queue.async { MediaProbe.reveal(item) }
     }
 
-    func unmuteAll() { for m in mutes.values { m.stop() }; mutes.removeAll() }
-
     var anyPlaying: Bool { items.contains(where: \.playing) }
 }
 
 /// open -n -W --stdout log.txt -a Lark --args --selftest
-/// Проверяет паузу и запуск на настоящих Spotify/Музыке и вкладке браузера (громкость на время проверки почти ноль)
-/// и что macOS даёт создать «выключатель звука». Пишет ✓/✗ по каждому шагу.
+/// Проверяет кнопки на настоящих Spotify/Музыке и вкладке браузера (громкость на время проверки почти ноль)
+/// и что macOS даёт перехватить звук программы. Пишет ✓/✗ по каждому шагу.
 enum SelfTest {
     static func say(_ ok: Bool, _ s: String) { print("\(ok ? "✓" : "✗") \(s)"); fflush(stdout) }
-    static func wait() { Thread.sleep(forTimeInterval: 1.2) }
+    static func wait(_ s: Double = 1.2) { Thread.sleep(forTimeInterval: s) }
 
-    static func run() {
-        let r = MediaProbe.collect(muted: [])
+    static func run(running: Set<String>) {
+        let r = MediaProbe.collect(muted: [], running: running)
         say(true, "найдено: \(r.items.count) строк, подсказок: \(r.hints.count), программ со звуком в Core Audio: \(r.sound.count)")
         for h in r.hints { print("  ℹ︎ \(h.text)") }
+        for it in r.items {
+            print("  · \(it.title.prefix(40)) | \(it.subtitle) | обложка: \(it.artworkURL == nil ? "нет" : "есть") | \(it.position.map { clock($0) } ?? "—")/\(it.duration.map { clock($0) } ?? "—") | громкость: \(it.volume.map { String(format: "%.2f", $0) } ?? "—")")
+        }
 
-        if let it = r.items.first(where: { if case .player = $0.source { return !$0.playing } else { return false } }),
-           case .player(let b) = it.source {
-            let vol = OSA.run("tell application id \"\(b)\" to get sound volume").out
-            _ = OSA.run("tell application id \"\(b)\" to set sound volume to 0")
-            MediaProbe.setPlaying(it, true); wait()
-            let on = Media.parsePlayer(OSA.run(Media.playerScript(b)).out, bundle: b, name: it.appName)?.playing == true
-            MediaProbe.setPlaying(it, false); wait()
-            let off = Media.parsePlayer(OSA.run(Media.playerScript(b)).out, bundle: b, name: it.appName)?.playing == false
-            _ = OSA.run("tell application id \"\(b)\" to set sound volume to \(Int(vol) ?? 50)")
-            say(on, "\(it.appName): кнопка «играть»")
-            say(off, "\(it.appName): кнопка «пауза»")
+        if let it = r.items.first(where: { $0.isPlayer && !$0.playing }), case .player(let b) = it.source {
+            func now() -> MediaItem? { Media.parsePlayer(OSA.run(Media.playerScript(b)).out, bundle: b, name: it.appName) }
+            let vol = it.volume ?? 0.5
+            MediaProbe.perform(it, .volume(0)); wait(0.5)
+            say((now()?.volume ?? 1) < 0.02, "\(it.appName): громкость строки (0)")
+            MediaProbe.perform(it, .play); wait()
+            say(now()?.playing == true, "\(it.appName): играть")
+            MediaProbe.perform(it, .seek(30)); wait(0.6)
+            let p1 = now()?.position ?? -1
+            say(abs(p1 - 30) < 3, "\(it.appName): перемотка на 0:30 (сейчас \(clock(p1)))")
+            MediaProbe.perform(it, .skip(-10)); wait(0.6)
+            let p2 = now()?.position ?? -1
+            say(abs(p2 - 21) < 4, "\(it.appName): −10 секунд (сейчас \(clock(p2)))")
+            MediaProbe.perform(it, .pause); wait()
+            say(now()?.playing == false, "\(it.appName): пауза")
+            if let p = it.position { MediaProbe.perform(it, .seek(p)) }
+            MediaProbe.perform(it, .volume(vol)); wait(0.5)
+            say(abs((now()?.volume ?? 0) - vol) < 0.03, "\(it.appName): громкость вернулась (\(Int(vol * 100)))")
         } else { print("— плеер на паузе не найден, пропускаю") }
 
-        if let it = r.items.first(where: { !$0.playing && !$0.isSoundOnly && { if case .player = $0.source { return false }; return true }($0) }) {
-            let b = Media.browsers.first { $0.bundle == it.appBundle }!
-            func tabJS(_ js: String) -> String {
-                switch it.source {
-                case .chromeTab(let bb, let w, let t): return OSA.run("tell application id \"\(bb)\" to execute tab id \(t) of window id \(w) javascript \"\(js)\"").out
-                case .safariTab(let w, let i): return OSA.run("tell application id \"\(Media.safari)\" to do JavaScript \"\(js)\" in tab \(i) of window id \(w)").out
-                default: return ""
-                }
+        if let it = r.items.first(where: { $0.isTab && !$0.playing }), let b = Media.browsers.first(where: { $0.bundle == it.appBundle }) {
+            func now() -> MediaItem? { Media.parseTabs(OSA.run(Media.probeScript(b)).out, b).items.first { $0.id == it.id } }
+            let vol = it.volume ?? 1, pos = it.position ?? 0
+            MediaProbe.perform(it, .volume(0.01)); wait(0.4)
+            say(abs((now()?.volume ?? 1) - 0.01) < 0.005, "вкладка «\(it.title.prefix(30))»: громкость строки")
+            MediaProbe.perform(it, .play); wait()
+            say(now()?.playing == true, "вкладка: играть")
+            if (it.duration ?? 0) > 60 {
+                MediaProbe.perform(it, .seek(40)); wait(0.4)
+                let p = now()?.position ?? -1
+                say(abs(p - 40) < 3, "вкладка: перемотка на 0:40 (сейчас \(clock(p)))")
+                MediaProbe.perform(it, .skip(10)); wait(0.4)
+                let q = now()?.position ?? -1
+                say(abs(q - 50) < 3, "вкладка: +10 секунд (сейчас \(clock(q)))")
             }
-            func state() -> String? {
-                Media.parseTabs(OSA.run(Media.probeScript(b)).out, b).items.first { $0.id == it.id }.map { $0.playing ? "1" : "0" }
-            }
-            _ = tabJS("[].slice.call(document.querySelectorAll('video,audio')).forEach(function(e){e.setAttribute('data-lark-vol',e.volume);e.volume=0.001});''")
-            MediaProbe.setPlaying(it, true); wait()
-            let on = state()
-            MediaProbe.setPlaying(it, false); wait()
-            let off = state()
-            _ = tabJS("[].slice.call(document.querySelectorAll('video,audio')).forEach(function(e){var v=e.getAttribute('data-lark-vol');if(v!==null){e.volume=parseFloat(v);e.removeAttribute('data-lark-vol')}});''")
-            say(on == "1", "вкладка «\(it.title.prefix(40))»: кнопка «играть» (\(on ?? "нет строки"))")
-            say(off == "0", "вкладка: кнопка «пауза» (\(off ?? "нет строки"))")
+            MediaProbe.perform(it, .pause); wait()
+            say(now()?.playing == false, "вкладка: пауза")
+            MediaProbe.perform(it, .seek(pos))
+            MediaProbe.perform(it, .volume(vol)); wait(0.4)
+            say(abs((now()?.volume ?? 0) - vol) < 0.02, "вкладка: громкость вернулась")
         } else { print("— вкладка на паузе не найдена, пропускаю") }
 
-        // Переход к вкладке (двойной щелчок): только на тестовой странице Lark, чтобы не трогать ваши вкладки.
         if let t = r.items.first(where: { $0.title.hasPrefix("Lark: тестовая страница") }), case .chromeTab(let bb, let w, _) = t.source {
             MediaProbe.reveal(t); wait()
             let active = OSA.run("tell application id \"\(bb)\" to get title of active tab of window id \(w)").out
-            say(active.hasPrefix("Lark: тестовая страница"), "двойной щелчок открывает нужную вкладку (активна: «\(active.prefix(40))»)")
-        } else { print("— тестовой вкладки нет, переход не проверяю") }
+            say(active.hasPrefix("Lark: тестовая страница"), "двойной щелчок открывает нужную вкладку")
+        }
 
-        // «Выключить звук» на самом Lark: проверяем, что macOS разрешает создать tap и он держится.
-        if let me = SoundApps.processes().first(where: { $0.pid == getpid() }) ?? {
-            NSSound(named: "Tink")?.volume = 0.0; NSSound(named: "Tink")?.play(); Thread.sleep(forTimeInterval: 0.3)
-            return SoundApps.processes().first(where: { $0.pid == getpid() })
-        }() {
-            let m = SoundMute(objs: [me.obj])
-            say(m != nil, m != nil ? "выключатель звука создаётся (доступ к системному звуку есть)"
-                                   : "выключатель звука не создаётся — нет доступа «Запись системного звука» для Lark")
-            m?.stop()
-        } else { print("— у Lark нет объекта звука, пропускаю выключатель") }
+        // Громкость программы на самом Lark: macOS разрешает перехватить звук, громкость меняется на лету.
+        NSSound(named: "Tink")?.volume = 0
+        NSSound(named: "Tink")?.play()
+        Thread.sleep(forTimeInterval: 0.3)
+        if let me = SoundApps.processes().first(where: { $0.pid == getpid() }) {
+            let v = AppVolume(objs: [me.obj], gain: 0.3)
+            say(v != nil, v != nil ? "громкость программы: перехват звука создаётся (доступ есть)"
+                                   : "громкость программы: нет доступа «Запись системного звука» для Lark")
+            v?.gain = 0.7
+            say(v.map { abs($0.gain - 0.7) < 0.001 } ?? false, "громкость программы меняется на лету")
+            v?.stop()
+        } else { print("— у Lark нет объекта звука, пропускаю перехват") }
     }
 }
 
@@ -575,12 +675,15 @@ enum Icons {
     }
 }
 
-/// Фавиконы вкладок: качаются один раз и живут в памяти, пока Lark запущен.
+/// Картинки из сети: фавиконы вкладок, обложки треков, превью видео. Качаются один раз, живут в памяти, пока Lark запущен.
 @MainActor
-final class Favicons: ObservableObject {
-    static let shared = Favicons()
+final class Images: ObservableObject {
+    static let shared = Images()
     @Published private(set) var images: [String: NSImage] = [:]
     private var requested: Set<String> = []
+
+    /// Положить готовую картинку (снимки для README).
+    func preload(_ url: String, _ img: NSImage) { images[url] = img; requested.insert(url) }
 
     func image(_ url: String?) -> NSImage? {
         guard let url, !url.isEmpty else { return nil }
@@ -592,9 +695,11 @@ final class Favicons: ObservableObject {
     private func load(_ s: String) {
         guard !requested.contains(s), let url = URL(string: s), ["http", "https", "data"].contains(url.scheme ?? "") else { return }
         requested.insert(s)
-        var tries = [url]   // не вышло со значком из страницы — пробуем сайт/favicon.ico
-        if let host = url.host, url.path != "/favicon.ico", let fb = URL(string: "https://\(host)/favicon.ico") { tries.append(fb) }
-        Self.fetch(tries) { img in Favicons.shared.images[s] = img }
+        var tries = [url]   // фавикон не скачался — пробуем сайт/favicon.ico
+        if url.path.contains("icon"), let host = url.host, url.path != "/favicon.ico", let fb = URL(string: "https://\(host)/favicon.ico") {
+            tries.append(fb)
+        }
+        Self.fetch(tries) { img in Images.shared.images[s] = img }
     }
 
     nonisolated private static func fetch(_ urls: [URL], _ done: @escaping @MainActor (NSImage) -> Void) {
@@ -612,23 +717,45 @@ final class Favicons: ObservableObject {
     }
 }
 
-/// Значок строки: фавикон сайта с маленьким значком браузера в углу; без фавикона — значок приложения.
-struct MediaIcon: View {
+/// Картинка строки: обложка или превью (со значком сайта или программы в углу); без них — фавикон с браузером в углу;
+/// без фавикона — значок программы.
+struct MediaArt: View {
     let item: MediaItem
-    @ObservedObject private var favicons = Favicons.shared
+    @ObservedObject private var images = Images.shared
+    private let size: CGFloat = 38
+
     var body: some View {
-        if let fav = favicons.image(item.iconURL) {
+        if let art = images.image(item.artworkURL) {
+            Image(nsImage: art).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+                .overlay(alignment: .bottomTrailing) { badge(images.image(item.iconURL) ?? Icons.app(item.appBundle)) }
+        } else if let fav = images.image(item.iconURL) {
             Image(nsImage: fav).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
-                .frame(width: 22, height: 22)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .frame(width: 26, height: 26)
-                .overlay(alignment: .bottomTrailing) {
-                    Image(nsImage: Icons.app(item.appBundle)).resizable().frame(width: 13, height: 13)
-                        .offset(x: 3, y: 3)
-                }
+                .frame(width: 28, height: 28)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .frame(width: size, height: size)
+                .overlay(alignment: .bottomTrailing) { badge(Icons.app(item.appBundle)) }
         } else {
-            Image(nsImage: Icons.app(item.appBundle)).resizable().frame(width: 26, height: 26)
+            Image(nsImage: Icons.app(item.appBundle)).resizable().frame(width: size - 4, height: size - 4).frame(width: size, height: size)
         }
+    }
+
+    private func badge(_ img: NSImage) -> some View {
+        Image(nsImage: img).resizable().aspectRatio(contentMode: .fit).frame(width: 15, height: 15)
+            .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
+            .offset(x: 4, y: 4)
+    }
+}
+
+/// Фон строки: выбранная — цветом, под мышью — чуть светлее.
+struct RowBackground: View {
+    var selected = false
+    var hover = false
+    var body: some View {
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(selected ? Color.accentColor.opacity(0.2) : (hover ? Color.primary.opacity(0.07) : .clear))
     }
 }
 
@@ -641,10 +768,7 @@ struct HoverRow<Content: View>: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(selected ? Color.accentColor.opacity(0.2) : (hover ? Color.primary.opacity(0.07) : .clear))
-            )
+            .background(RowBackground(selected: selected, hover: hover))
             .contentShape(Rectangle())
             .onHover { hover = $0 }
     }
@@ -657,10 +781,11 @@ struct DeviceColumn: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text(dir == .output ? "Звук" : "Микрофон").font(.system(size: 13, weight: .semibold))
+                Text(dir == .output ? tr("Звук", "Sound", "Heli") : tr("Микрофон", "Microphone", "Mikrofon"))
+                    .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button { audio.toggleKeep(dir) } label: {
-                    Label("Держать", systemImage: audio.keeps(dir) ? "pin.fill" : "pin")
+                    Label(tr("Держать", "Keep", "Hoia"), systemImage: audio.keeps(dir) ? "pin.fill" : "pin")
                         .font(.system(size: 11, weight: .medium))
                         .padding(.horizontal, 7).padding(.vertical, 2)
                         .background(Capsule().fill(audio.keeps(dir) ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.06)))
@@ -668,8 +793,12 @@ struct DeviceColumn: View {
                 }
                 .buttonStyle(.plain)
                 .help(dir == .output
-                      ? "Не давать macOS самой переключать выход (например, на подключившиеся AirPods)"
-                      : "Не давать macOS самой переключать микрофон (например, на подключившиеся AirPods)")
+                      ? tr("Не давать macOS самой переключать выход (например, на подключившиеся AirPods)",
+                           "Don’t let macOS switch the output on its own (for example, to AirPods that just connected)",
+                           "Ära lase macOS-il väljundit ise vahetada (näiteks äsja ühendatud AirPodsidele)")
+                      : tr("Не давать macOS самой переключать микрофон (например, на подключившиеся AirPods)",
+                           "Don’t let macOS switch the microphone on its own (for example, to AirPods that just connected)",
+                           "Ära lase macOS-il mikrofoni ise vahetada (näiteks äsja ühendatud AirPodsidele)"))
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 2)
@@ -689,7 +818,7 @@ struct DeviceColumn: View {
 
             let devs = audio.visible(dir)
             if devs.isEmpty {
-                Text("Нет устройств").foregroundStyle(.secondary).padding(.horizontal, 8)
+                Text(tr("Нет устройств", "No devices", "Seadmeid pole")).foregroundStyle(.secondary).padding(.horizontal, 8)
             }
             ForEach(devs, id: \.uid) { d in
                 let sel = d.id == audio.current(dir)
@@ -708,7 +837,7 @@ struct DeviceColumn: View {
                 .buttonStyle(.plain)
                 .help(d.name)
                 .contextMenu {
-                    if !sel { Button("Скрыть из списка") { audio.hide(d) } }
+                    if !sel { Button(tr("Скрыть из списка", "Hide from list", "Peida loendist")) { audio.hide(d) } }
                 }
             }
 
@@ -722,44 +851,207 @@ struct DeviceColumn: View {
     }
 }
 
+/// Наборы «выход + микрофон» одной кнопкой (⌃⌥1…⌃⌥9). «＋ Запомнить» сохраняет то, что выбрано сейчас.
+struct PresetBar: View {
+    @ObservedObject var audio: AudioModel
+    @State private var adding = false
+    @State private var name = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "square.stack.3d.up").font(.system(size: 12)).foregroundStyle(.secondary)
+                .help(tr("Наборы: выход и микрофон одной кнопкой", "Presets: output and microphone in one click", "Komplektid: väljund ja mikrofon ühe klõpsuga"))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Array(audio.presets.enumerated()), id: \.element.id) { i, p in chip(p, i) }
+                    if adding {
+                        TextField(tr("Название", "Name", "Nimi"), text: $name)
+                            .textFieldStyle(.roundedBorder).controlSize(.small).frame(width: 130)
+                            .focused($focused)
+                            .onSubmit(save)
+                            .onExitCommand { adding = false }
+                        Button(tr("Сохранить", "Save", "Salvesta"), action: save).controlSize(.small)
+                        Button { adding = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.secondary)
+                    } else {
+                        Button {
+                            name = Presets.defaultName(audio.presets)
+                            adding = true
+                            DispatchQueue.main.async { focused = true }
+                        } label: {
+                            Label(tr("Запомнить", "Save current", "Salvesta praegune"), systemImage: "plus")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .padding(.horizontal, 9).padding(.vertical, 4)
+                                .background(Capsule().strokeBorder(Color.primary.opacity(0.18), style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(tr("Запомнить выбранные сейчас выход и микрофон как набор", "Save the current output and microphone as a preset",
+                                 "Salvesta praegune väljund ja mikrofon komplektina"))
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
+    }
+
+    private func save() {
+        audio.addPreset(name)
+        adding = false
+    }
+
+    private func chip(_ p: Preset, _ i: Int) -> some View {
+        let active = audio.isActive(p)
+        let missing = Presets.missing(p, outputs: audio.outputs, inputs: audio.inputs)
+        let devices = [p.outputName.map { "🔊 \($0)" }, p.inputName.map { "🎙 \($0)" }].compactMap { $0 }.joined(separator: "  ")
+        var help = devices
+        if let k = Presets.hotkeyLabel(i) { help += "\n" + tr("Сочетание: \(k)", "Shortcut: \(k)", "Kiirklahv: \(k)") }
+        if !missing.isEmpty { help += "\n" + tr("Не подключено: ", "Not connected: ", "Pole ühendatud: ") + missing.joined(separator: ", ") }
+        return Button { audio.applyPreset(p) } label: {
+            HStack(spacing: 5) {
+                Text(p.name).lineLimit(1)
+                if let k = Presets.hotkeyLabel(i) { Text(k).foregroundStyle(active ? Color.accentColor.opacity(0.7) : Color.secondary.opacity(0.7)) }
+            }
+            .font(.system(size: 11.5, weight: .medium))
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(Capsule().fill(active ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.07)))
+            .foregroundStyle(active ? Color.accentColor : (missing.isEmpty ? Color.primary : Color.secondary))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .contextMenu {
+            Button(tr("Обновить текущими устройствами", "Update with current devices", "Uuenda praeguste seadmetega")) { audio.overwritePreset(p) }
+            if i > 0 { Button(tr("Сдвинуть левее", "Move left", "Liiguta vasakule")) { audio.movePreset(p, by: -1) } }
+            if i < audio.presets.count - 1 { Button(tr("Сдвинуть правее", "Move right", "Liiguta paremale")) { audio.movePreset(p, by: 1) } }
+            Divider()
+            Button(tr("Удалить", "Delete", "Kustuta"), role: .destructive) { audio.deletePreset(p) }
+        }
+    }
+}
+
+/// Полоска времени: сколько прошло и сколько осталось; щелчок или перетаскивание — перемотка.
+struct ProgressLine: View {
+    let item: MediaItem
+    @ObservedObject var media: MediaModel
+    @State private var dragFraction: Double?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+            let dur = max(item.duration ?? 1, 1)
+            let pos = dragFraction.map { $0 * dur } ?? (item.livePosition(at: ctx.date) ?? 0)
+            HStack(spacing: 6) {
+                Text(clock(pos)).frame(minWidth: 30, alignment: .trailing)
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.primary.opacity(0.15)).frame(height: 3)
+                        Capsule().fill(Color.accentColor).frame(width: max(3, g.size.width * CGFloat(min(1, pos / dur))), height: 3)
+                    }
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { v in dragFraction = Double(max(0, min(1, v.location.x / max(g.size.width, 1)))) }
+                        .onEnded { v in
+                            let f = Double(max(0, min(1, v.location.x / max(g.size.width, 1))))
+                            dragFraction = nil
+                            media.perform(item, .seek(f * dur))
+                        })
+                }
+                .frame(height: 10)
+                Text("−" + clock(dur - pos)).frame(minWidth: 34, alignment: .leading)
+            }
+            .font(.system(size: 10).monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+        .help(tr("Щёлкните, чтобы перемотать", "Click to seek", "Klõpsake kerimiseks"))
+    }
+}
+
 struct MediaRow: View {
     let item: MediaItem
     @ObservedObject var media: MediaModel
-    var body: some View {
-        HoverRow {
-            HStack(spacing: 10) {
-                HStack(spacing: 10) {
-                    MediaIcon(item: item)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(item.title).lineLimit(1).truncationMode(.tail)
-                        Text(item.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) { media.reveal(item) }   // двойной щелчок — перейти к программе и вкладке
-                .help("Двойной щелчок — открыть \(item.isSoundOnly ? item.appName : "там, где играет")")
+    @State private var hover = false
+    /// Для снимков в README: показать кнопки строки без наведения.
+    nonisolated(unsafe) static var showControls = false
 
-                if item.playing {
-                    Image(systemName: "waveform")
-                        .foregroundStyle(Color.accentColor)
-                        .symbolEffect(.variableColor.iterative, options: .repeating)
-                }
-                Button { media.toggle(item) } label: {
-                    Image(systemName: item.isSoundOnly ? (item.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                                       : (item.playing ? "pause.fill" : "play.fill"))
-                        .font(.system(size: 13))
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(item.playing ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.08)))
-                }
-                .buttonStyle(.plain)
-                .help(item.isSoundOnly ? (item.muted ? "Вернуть звук" : "Выключить звук") : (item.playing ? "Пауза" : "Играть"))
-            }
+    private func small(_ symbol: String, _ help: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).frame(width: 22, height: 22).contentShape(Rectangle())
         }
+        .buttonStyle(.plain).foregroundStyle(.secondary).help(help)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 10) {
+                MediaArt(item: item)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.title).lineLimit(1).truncationMode(.tail)
+                    Text(item.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    if item.canSeek { ProgressLine(item: item, media: media).padding(.top, 2) }
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { media.reveal(item) }
+            .help(tr("Двойной щелчок — открыть", "Double-click to open", "Topeltklõps avab"))
+
+            if item.isSoundOnly, let v = item.volume, v < 0.999, !item.muted, !(hover || Self.showControls) {
+                Text("\(Int((v * 100).rounded()))%").font(.system(size: 10.5, weight: .medium).monospacedDigit()).foregroundStyle(.secondary)
+            }
+            if hover || Self.showControls {
+                HStack(spacing: 0) {
+                    if item.isPlayer {
+                        small("backward.fill", tr("Предыдущий трек", "Previous track", "Eelmine lugu")) { media.perform(item, .previous) }
+                        small("forward.fill", tr("Следующий трек", "Next track", "Järgmine lugu")) { media.perform(item, .next) }
+                    } else if item.canSeek {
+                        small("gobackward.10", tr("Назад на 10 секунд", "Back 10 seconds", "10 sekundit tagasi")) { media.perform(item, .skip(-10)) }
+                        small("goforward.10", tr("Вперёд на 10 секунд", "Forward 10 seconds", "10 sekundit edasi")) { media.perform(item, .skip(10)) }
+                    }
+                    if let v = item.volume {
+                        Image(systemName: v < 0.01 ? "speaker.slash.fill" : (v < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.2.fill"))
+                            .font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 18).padding(.leading, 4)
+                        Slider(value: Binding(get: { v }, set: { media.setVolume(item, $0) }), in: 0...1)
+                            .controlSize(.mini).frame(width: 74)
+                            .help(tr("Громкость: \(Int(v * 100))%", "Volume: \(Int(v * 100))%", "Helitugevus: \(Int(v * 100))%"))
+                    }
+                }
+            } else if item.playing {
+                Image(systemName: "waveform")
+                    .foregroundStyle(Color.accentColor)
+                    .symbolEffect(.variableColor.iterative, options: .repeating)
+            }
+            Button { media.toggle(item) } label: {
+                Image(systemName: item.isSoundOnly ? (item.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                                   : (item.playing ? "pause.fill" : "play.fill"))
+                    .font(.system(size: 13))
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(item.playing ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.08)))
+            }
+            .buttonStyle(.plain)
+            .help(item.isSoundOnly ? (item.muted ? tr("Вернуть звук", "Unmute", "Taasta heli") : tr("Выключить звук", "Mute", "Vaigista"))
+                                   : (item.playing ? tr("Пауза", "Pause", "Paus") : tr("Играть", "Play", "Mängi")))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RowBackground(hover: hover))
+        .onHover { hover = $0 }
         .contextMenu {
-            Button("Играть только это") { media.solo(item) }
-            Button(item.isSoundOnly ? (item.muted ? "Вернуть звук" : "Выключить звук") : (item.playing ? "Пауза" : "Играть")) { media.toggle(item) }
-            Button("Открыть") { media.reveal(item) }
+            Button(tr("Играть только это", "Play only this", "Mängi ainult seda")) { media.solo(item) }
+            Button(item.isSoundOnly ? (item.muted ? tr("Вернуть звук", "Unmute", "Taasta heli") : tr("Выключить звук", "Mute", "Vaigista"))
+                                    : (item.playing ? tr("Пауза", "Pause", "Paus") : tr("Играть", "Play", "Mängi"))) { media.toggle(item) }
+            if item.isPlayer {
+                Button(tr("Следующий трек", "Next track", "Järgmine lugu")) { media.perform(item, .next) }
+                Button(tr("Предыдущий трек", "Previous track", "Eelmine lugu")) { media.perform(item, .previous) }
+            }
+            if item.canSeek {
+                Button(tr("Вперёд на 10 секунд", "Forward 10 seconds", "10 sekundit edasi")) { media.perform(item, .skip(10)) }
+                Button(tr("Назад на 10 секунд", "Back 10 seconds", "10 sekundit tagasi")) { media.perform(item, .skip(-10)) }
+            }
+            Divider()
+            Button(tr("Открыть", "Open", "Ava")) { media.reveal(item) }
         }
     }
 }
@@ -769,25 +1061,34 @@ struct MediaSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("Сейчас играет").font(.system(size: 13, weight: .semibold))
+                Text(tr("Сейчас играет", "Now playing", "Praegu mängib")).font(.system(size: 13, weight: .semibold))
                 Spacer()
-                if media.anyPlaying {
+                if media.anyPlaying || media.canResumeAll {
                     Button { media.pauseAll() } label: {
-                        Label("Пауза везде", systemImage: "pause.circle")
+                        Label(media.anyPlaying ? tr("Пауза везде", "Pause all", "Paus kõikjal") : tr("Вернуть всё", "Resume all", "Jätka kõike"),
+                              systemImage: media.anyPlaying ? "pause.circle" : "play.circle")
                             .font(.system(size: 11, weight: .medium))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
+                    .help(media.anyPlaying
+                          ? tr("Поставить на паузу всё; второе нажатие вернёт как было", "Pause everything; click again to resume what was playing",
+                               "Pane kõik pausile; teine klõps jätkab seda, mis mängis")
+                          : tr("Включить то, что было на паузе этой кнопкой", "Resume what this button paused", "Jätka seda, mis selle nupuga peatati"))
                 }
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 2)
 
             if !media.loaded {
-                HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Смотрю, что играет…").foregroundStyle(.secondary) }
-                    .padding(.horizontal, 8).padding(.vertical, 4)
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(tr("Смотрю, что играет…", "Looking for what’s playing…", "Otsin, mis mängib…")).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
             } else if media.items.isEmpty {
-                Text("Ничего не играет").foregroundStyle(.secondary).padding(.horizontal, 8).padding(.vertical, 4)
+                Text(tr("Ничего не играет", "Nothing is playing", "Midagi ei mängi")).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
             }
             ForEach(media.items) { MediaRow(item: $0, media: media) }
 
@@ -797,8 +1098,9 @@ struct MediaSection: View {
                     Text(h.text).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if h.openPrivacy {
                         Spacer(minLength: 0)
-                        Button("Открыть") {
-                            if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") { NSWorkspace.shared.open(u) }
+                        Button(tr("Открыть", "Open", "Ava")) {
+                            let pane = h.id == "tap" ? "Privacy_ScreenCapture" : "Privacy_Automation"
+                            if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") { NSWorkspace.shared.open(u) }
                         }
                         .controlSize(.small)
                     }
@@ -812,6 +1114,9 @@ struct MediaSection: View {
 struct PanelView: View {
     @ObservedObject var audio: AudioModel
     @ObservedObject var media: MediaModel
+    var onLanguage: (Lang?) -> Void = { _ in }
+    var onCheckUpdate: () -> Void = {}
+    var onUpdate: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
@@ -823,36 +1128,66 @@ struct PanelView: View {
             .padding(10)
 
             Divider()
+            PresetBar(audio: audio)
+            Divider()
             MediaSection(media: media).padding(10)
             Divider()
 
             HStack(spacing: 12) {
-                Button("Настройки звука macOS…") {
+                Button(tr("Настройки звука macOS…", "macOS Sound Settings…", "macOS-i heliseaded…")) {
                     if let u = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") { NSWorkspace.shared.open(u) }
                 }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
                 Spacer()
+                if let note = audio.updateNote {
+                    Text(note).foregroundStyle(.secondary)
+                } else if let v = audio.update {
+                    Button(action: onUpdate) {
+                        Label(tr("Обновить до \(v)", "Update to \(v)", "Uuenda versioonile \(v)"), systemImage: "arrow.down.circle.fill")
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                }
                 Menu {
-                    Toggle("Запускать при входе в систему", isOn: Binding(get: { audio.loginOn }, set: { _ in audio.toggleLogin() }))
+                    Toggle(tr("Запускать при входе в систему", "Open at login", "Ava sisselogimisel"),
+                           isOn: Binding(get: { audio.loginOn }, set: { _ in audio.toggleLogin() }))
+                    Menu(tr("Язык", "Language", "Keel")) {
+                        let forced = UserDefaults.standard.string(forKey: "language")
+                        Button((forced == nil ? "✓ " : "") + tr("Как в системе", "Same as system", "Nagu süsteemis")) { onLanguage(nil) }
+                        ForEach(Lang.allCases, id: \.self) { l in
+                            Button((forced == l.rawValue ? "✓ " : "") + l.selfName) { onLanguage(l) }
+                        }
+                    }
                     if !audio.hidden.isEmpty {
-                        Button("Показать скрытые устройства (\(audio.hidden.count))") { audio.unhideAll() }
+                        Button(tr("Показать скрытые устройства (\(audio.hidden.count))", "Show hidden devices (\(audio.hidden.count))",
+                                  "Näita peidetud seadmeid (\(audio.hidden.count))")) { audio.unhideAll() }
                     }
                     Divider()
-                    Button("Выйти из Lark") { NSApp.terminate(nil) }
+                    if let v = audio.update {
+                        Button(tr("Обновить до \(v)", "Update to \(v)", "Uuenda versioonile \(v)"), action: onUpdate)
+                    } else {
+                        Button(tr("Проверить обновления", "Check for updates", "Kontrolli uuendusi"), action: onCheckUpdate)
+                    }
+                    Text("Lark \(Updater.local)")
+                    Divider()
+                    Button(tr("Выйти из Lark", "Quit Lark", "Sulge Lark")) { NSApp.terminate(nil) }
                 } label: {
                     Image(systemName: "gearshape")
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help("Настройки Lark")
+                .overlay(alignment: .topTrailing) {
+                    if audio.update != nil { Circle().fill(Color.orange).frame(width: 7, height: 7).offset(x: 3, y: -2) }
+                }
+                .help(tr("Настройки Lark", "Lark settings", "Larki seaded"))
             }
             .font(.system(size: 12))
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
         }
         .font(.system(size: 13))
-        .frame(width: 580)
+        .frame(width: 600)
+        .id(audio.langTick)
     }
 }
 
@@ -864,6 +1199,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let media = MediaModel()
     var statusItem: NSStatusItem!
     let popover = NSPopover()
+    private var outsideClicks: Any?
+    private var flashWork: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--unregister-login") {   // нужно для uninstall.sh
@@ -872,18 +1209,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return
         }
         if CommandLine.arguments.contains("--selftest") {   // проверка кнопок на настоящих программах, без звука
-            DispatchQueue.global().async { SelfTest.run(); DispatchQueue.main.async { NSApp.terminate(nil) } }
+            afterLaunch { running in SelfTest.run(running: running) }
             return
         }
         if CommandLine.arguments.contains("--probe") {   // диагностика: что Lark видит сейчас (open -a Lark --args --probe)
-            DispatchQueue.global().async {
-                let r = MediaProbe.collect(muted: [])
+            afterLaunch { running in
+                let r = MediaProbe.collect(muted: [], running: running)
                 var lines = r.items.map { "\($0.playing ? "▶" : "⏸") \($0.title) — \($0.subtitle)\($0.iconURL.map { " [\($0)]" } ?? "")" }
                 lines += r.hints.map { "ℹ︎ \($0.text)" }
                 lines += r.sound.map { "♪ \($0.app.name) (\($0.app.bundle)) звук: \($0.app.outputting ? "да" : "нет"), процессов: \($0.objs.count)" }
+                for b in Media.browsers where running.contains(b.bundle) {   // сырой ответ браузера: сколько вкладок ответило, последняя ошибка
+                    let t0 = Date()
+                    let o = OSA.run(Media.probeScript(b))
+                    let tail = o.out.components(separatedBy: "\n").last ?? ""
+                    lines.append("🔎 \(b.name) за \(String(format: "%.1f", Date().timeIntervalSince(t0))) с: \(tail.replacingOccurrences(of: Media.sep, with: " | "))\(o.err.isEmpty ? "" : " | " + o.err)")
+                }
                 print(lines.isEmpty ? "Ничего не играет" : lines.joined(separator: "\n"))
                 fflush(stdout)
-                DispatchQueue.main.async { NSApp.terminate(nil) }
             }
             return
         }
@@ -892,17 +1234,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusItem.button?.imagePosition = .imageLeading
 
-        let host = NSHostingController(rootView: PanelView(audio: audio, media: media))
-        host.sizingOptions = .preferredContentSize
-        popover.contentViewController = host
+        makePanel()
         popover.behavior = .transient
         popover.animates = false
         popover.delegate = self
         media.onReveal = { [weak self] in self?.popover.performClose(nil) }
+        audio.onPresetsChanged = { [weak self] in self?.registerHotkeys() }
 
         audio.refresh()
         updateIcon()
+        registerHotkeys()
 
         let changed: () -> Void = { [weak self] in
             MainActor.assumeIsolated {
@@ -912,7 +1255,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
         Audio.listen(systemObject, kAudioHardwarePropertyDefaultInputDevice, changed)
-        Audio.listen(systemObject, kAudioHardwarePropertyDefaultOutputDevice, changed)
+        Audio.listen(systemObject, kAudioHardwarePropertyDefaultOutputDevice) { [weak self] in
+            changed()
+            MainActor.assumeIsolated { self?.media.rebuildTaps() }   // громкость программ — на новый выход
+        }
         Audio.listen(systemObject, kAudioHardwarePropertyDevices) { [weak self] in
             changed()
             // Bluetooth-устройства иногда «перехватывают» вход с задержкой после подключения
@@ -922,6 +1268,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         audio.keeper.enforceAll()
         enableLoginItemOnce()
+
+        // Колесо мыши или два пальца над значком — громкость выхода.
+        NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
+            guard let self, let w = self.statusItem.button?.window, e.window === w else { return e }
+            let dy = Float(e.isDirectionInvertedFromDevice ? -e.scrollingDeltaY : e.scrollingDeltaY)
+            guard dy != 0 else { return nil }
+            let delta = e.hasPreciseScrollingDeltas ? dy * 0.004 : (dy > 0 ? 1 : -1) / 16
+            if let v = self.audio.nudgeOutput(delta) { self.flash("\(Int((v * 100).rounded()))%") }
+            return nil
+        }
+
+        // Новая версия: при запуске и раз в день смотрим, не прошла ли неделя с прошлой проверки.
+        checkUpdate(force: false)
+        Timer.scheduledTimer(withTimeInterval: 24 * 3600, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkUpdate(force: false) }
+        }
+    }
+
+    /// Для --probe/--selftest: дать главному потоку получить список запущенных программ, работу — в фоне, потом выйти.
+    private func afterLaunch(_ work: @escaping (Set<String>) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            let running = MediaProbe.runningBundles()
+            DispatchQueue.global().async {
+                work(running)
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+        }
+    }
+
+    private func makePanel() {
+        let view = PanelView(audio: audio, media: media,
+                             onLanguage: { [weak self] l in self?.setLanguage(l) },
+                             onCheckUpdate: { [weak self] in self?.checkUpdate(force: true, report: true) },
+                             onUpdate: { [weak self] in self?.runUpdate() })
+        let host = NSHostingController(rootView: view)
+        host.sizingOptions = .preferredContentSize
+        popover.contentViewController = host
+    }
+
+    private func setLanguage(_ l: Lang?) {
+        if let l { UserDefaults.standard.set(l.rawValue, forKey: "language") } else { UserDefaults.standard.removeObject(forKey: "language") }
+        Lang.current = Lang.detect()
+        audio.langTick += 1
+        updateIcon()
+        media.refresh()
+    }
+
+    private func checkUpdate(force: Bool, report: Bool = false) {
+        if report { audio.updateNote = tr("Проверяю…", "Checking…", "Kontrollin…") }
+        Updater.check(force: force) { [weak self] v in
+            guard let self else { return }
+            self.audio.update = v
+            if report {
+                self.audio.updateNote = v == nil ? tr("У вас последняя версия", "You have the latest version", "Teil on uusim versioon") : nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { MainActor.assumeIsolated { self.audio.updateNote = nil } }
+            }
+        }
+    }
+
+    private func runUpdate() {
+        audio.updateNote = tr("Обновляю… Lark перезапустится сам", "Updating… Lark will restart", "Uuendan… Lark käivitub uuesti")
+        Updater.install()
+    }
+
+    private func registerHotkeys() {
+        let list = audio.presets.prefix(Presets.maxHotkeys).map { p in
+            { [weak self] in
+                guard let self else { return }
+                let missing = self.audio.applyPreset(p)
+                self.flash(missing.isEmpty ? p.name : "\(p.name): " + tr("нет ", "missing ", "puudub ") + missing.joined(separator: ", "))
+            }
+        }
+        Hotkeys.shared.setDigits(Array(list))
+    }
+
+    /// Короткая надпись рядом со значком (громкость колесом, включённый набор).
+    private func flash(_ text: String) {
+        statusItem.button?.title = " " + text
+        flashWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.statusItem.button?.title = "" }
+        flashWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4, execute: w)
     }
 
     @objc private func togglePopover() {
@@ -933,13 +1361,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
         // Щелчок мимо панели (в другой программе, на рабочем столе, в строке меню) — закрыть.
-        // Сам macOS закрывает «временную» панель, только если Lark стал активным, а это срабатывает не всегда.
         outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated { self?.popover.performClose(nil) }
         }
     }
-
-    private var outsideClicks: Any?
 
     func popoverDidClose(_ notification: Notification) {
         media.stop()
@@ -960,7 +1385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return true
         }
         img.isTemplate = true
-        img.accessibilityDescription = "Lark: звук и микрофон"
+        img.accessibilityDescription = "Lark"
         return img
     }()
 
@@ -969,7 +1394,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.button?.image = statusIcon
         let out = audio.outputs.first { $0.id == audio.curOut }?.name ?? "—"
         let inp = audio.inputs.first { $0.id == audio.curIn }?.name ?? "—"
-        statusItem.button?.toolTip = "Звук: \(out)\nМикрофон: \(inp)"
+        statusItem.button?.toolTip = tr("Звук: \(out)\nМикрофон: \(inp)\nКолесо мыши — громкость",
+                                        "Sound: \(out)\nMicrophone: \(inp)\nScroll to change volume",
+                                        "Heli: \(out)\nMikrofon: \(inp)\nKerige helitugevuse muutmiseks")
     }
 
     private func enableLoginItemOnce() {

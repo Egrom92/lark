@@ -13,7 +13,7 @@ s = open('Sources/main.swift').read()
 i = s.rindex('MainActor.assumeIsolated {\n    let app')
 open('build/shotsrc/main.swift', 'w').write(s[:i] + open('scripts/shots.swift').read())
 PY
-swiftc -swift-version 5 -target "$(uname -m)-apple-macos14.2" -o build/LarkShots Sources/Logic.swift build/shotsrc/main.swift
+swiftc -swift-version 5 -target "$(uname -m)-apple-macos14.2" -o build/LarkShots $(ls Sources/*.swift | grep -v main.swift) build/shotsrc/main.swift
 ./build/LarkShots "$OUT"
 cp docs/icon.png "$OUT/icon.png"
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
