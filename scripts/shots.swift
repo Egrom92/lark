@@ -61,8 +61,8 @@ MainActor.assumeIsolated {
         }
     }
     UserDefaults.standard.set(Presets.encode([
-        Preset(id: "p1", name: "Звонок", output: "o1", input: "i2", outputName: "AirPods Pro", inputName: "Микрофон MacBook Air"),
-        Preset(id: "p2", name: "Музыка", output: "o2", input: "i2", outputName: "JBL Flip 6", inputName: "Микрофон MacBook Air"),
+        Preset(id: "p1", name: tr("Звонок", "Call", "Kõne"), output: "o1", input: "i2", outputName: "AirPods Pro", inputName: "MacBook Air"),
+        Preset(id: "p2", name: tr("Музыка", "Music", "Muusika"), output: "o2", input: "i2", outputName: "JBL Flip 6", inputName: "MacBook Air"),
     ]), forKey: Presets.key)
     audio.presets = Presets.decode(UserDefaults.standard.data(forKey: Presets.key))
     for u in [yt, fb] { _ = Images.shared.image(u) }
@@ -75,20 +75,20 @@ MainActor.assumeIsolated {
 
     @MainActor func media(_ items: [MediaItem]) -> MediaModel { let m = MediaModel(); m.loaded = true; m.items = items; return m }
     var spotify = MediaItem(id: "s", source: .player(bundle: "com.spotify.client"), appBundle: "com.spotify.client", appName: "Spotify",
-                            title: "Утренняя песня", subtitle: "Жаворонки · Spotify", playing: true)
+                            title: tr("Утренняя песня", "Morning Song", "Hommikulaul"), subtitle: tr("Жаворонки", "The Larks", "Lõokesed") + " · Spotify", playing: true)
     spotify.artworkURL = cover; spotify.position = 74; spotify.duration = 213; spotify.volume = 0.8
     var tabYT = MediaItem(id: "y", source: .chromeTab(bundle: "com.google.Chrome", window: 1, tab: 1), appBundle: "com.google.Chrome",
-                          appName: "Chrome", title: "Как сварить идеальный кофе дома", subtitle: "youtube.com · Chrome", playing: true, iconURL: yt)
+                          appName: "Chrome", title: tr("Как сварить идеальный кофе дома", "How to brew perfect coffee at home", "Kuidas keeta kodus täiuslikku kohvi"), subtitle: "youtube.com · Chrome", playing: true, iconURL: yt)
     tabYT.artworkURL = thumb; tabYT.position = 312; tabYT.duration = 1046; tabYT.volume = 1
     var tabFB = MediaItem(id: "f", source: .chromeTab(bundle: "com.google.Chrome", window: 1, tab: 2), appBundle: "com.google.Chrome",
-                          appName: "Chrome", title: "Видео · Facebook", subtitle: "facebook.com · Chrome", playing: false, iconURL: fb)
+                          appName: "Chrome", title: tr("Видео · Facebook", "Video · Facebook", "Video · Facebook"), subtitle: "facebook.com · Chrome", playing: false, iconURL: fb)
     tabFB.position = 41; tabFB.duration = 95; tabFB.volume = 1
     let zoom = MediaItem(id: "z", source: .sound(bundle: "us.zoom.xos"), appBundle: "us.zoom.xos", appName: "Zoom",
-                         title: "Zoom", subtitle: "Играет звук", playing: true, volume: 0.3)
+                         title: "Zoom", subtitle: tr("Играет звук", "Playing sound", "Mängib heli"), playing: true, volume: 0.3)
     let tg = MediaItem(id: "t", source: .sound(bundle: "com.tdesktop.Telegram"), appBundle: "com.tdesktop.Telegram", appName: "Telegram",
-                       title: "Telegram", subtitle: "Играет звук", playing: true, volume: 1)
+                       title: "Telegram", subtitle: tr("Играет звук", "Playing sound", "Mängib heli"), playing: true, volume: 1)
     let tgMuted = MediaItem(id: "t", source: .sound(bundle: "com.tdesktop.Telegram"), appBundle: "com.tdesktop.Telegram", appName: "Telegram",
-                            title: "Telegram", subtitle: "Звук выключен в Lark", playing: false, muted: true, volume: 1)
+                            title: "Telegram", subtitle: tr("Звук выключен в Lark", "Muted in Lark", "Larkis vaigistatud"), playing: false, muted: true, volume: 1)
     var spotifyPaused = spotify; spotifyPaused.playing = false
 
     snapshot(PanelView(audio: audio, media: media([spotify, tabYT, tg, tabFB])), "\(dir)/panel-playing.png")
