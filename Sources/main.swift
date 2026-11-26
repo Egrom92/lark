@@ -1218,8 +1218,21 @@ enum RouteNSMenu {
         return m
     }
 
+    /// Открыть меню у мыши. Если Lark ещё не стал активной программой (панель только что открылась поверх другой),
+    /// macOS закрыла бы меню в момент переключения — поэтому сначала дождаться активности, потом открыть.
     static func show(_ it: MediaItem, _ media: MediaModel) {
-        build(it, media).popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        let at = NSEvent.mouseLocation
+        let open = { build(it, media).popUp(positioning: nil, at: at, in: nil) }
+        if NSApp.isActive { open(); return }
+        NSApp.activate(ignoringOtherApps: true)
+        func wait(_ left: Int) {
+            if NSApp.isActive || left == 0 {
+                DispatchQueue.main.async { open() }   // после того как macOS закончит переключение
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { wait(left - 1) }
+            }
+        }
+        wait(20)
     }
 }
 
@@ -1567,7 +1580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         audio.refresh()
         media.outputs = audio.outputs
         media.start()
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)   // сразу активной: иначе первое меню в панели закрылось бы при переключении
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
         // Щелчок мимо панели (в другой программе, на рабочем столе, в строке меню) — закрыть.
