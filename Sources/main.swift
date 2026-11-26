@@ -1140,65 +1140,86 @@ struct MediaRow: View {
                 Button(tr("Назад на 10 секунд", "Back 10 seconds", "10 sekundit tagasi")) { media.perform(item, .skip(-10)) }
             }
             Divider()
-            Menu(tr("Куда выводить звук", "Sound output", "Heli väljund")) { RouteMenuItems(item: item, media: media) }
+            Button(tr("Куда выводить звук…", "Sound output…", "Heli väljund…")) { RouteNSMenu.show(item, media) }
             Divider()
             Button(tr("Открыть", "Open", "Ava")) { media.reveal(item) }
         }
     }
 }
 
-/// Пункты «Куда выводить звук». Вкладка с «Lark для Chrome» — своим разделом (только эта вкладка), ниже — весь браузер.
-/// Программа — сразу списком устройств.
-struct RouteMenuItems: View {
-    let item: MediaItem
-    @ObservedObject var media: MediaModel
-
-    @ViewBuilder private func deviceList(current: String?, pick: @escaping (Device?) -> Void, matchByName: Bool) -> some View {
-        Button((current == nil ? "✓ " : "") + tr("Как у всех", "Same as everything", "Nagu kõik")) { pick(nil) }
-        ForEach(media.outputs, id: \.uid) { d in
-            let on = matchByName ? current == d.name : current == d.uid
-            Button((on ? "✓ " : "") + d.name) { pick(d) }
-        }
-    }
-
-    var body: some View {
-        if item.isTab {
-            if item.hasExtension {
-                Section(tr("Только эта вкладка", "Only this tab", "Ainult see vahekaart")) {
-                    deviceList(current: item.sinkName, pick: { media.setTabSink(item, $0?.name) }, matchByName: true)
-                }
-            } else {
-                Button(tr("Только эта вкладка: поставить «Lark для Chrome»…", "Only this tab: install Lark for Chrome…",
-                          "Ainult see vahekaart: paigalda „Lark Chrome’ile“…")) { ChromeExtension.openInstall() }
-            }
-            Divider()
-            Menu(tr("Весь \(item.appName)", "All of \(item.appName)", "Kogu \(item.appName)")) {
-                deviceList(current: media.route(item.appBundle), pick: { media.setRoute(item.appBundle, $0?.uid) }, matchByName: false)
-            }
-        } else {
-            deviceList(current: media.route(item.appBundle), pick: { media.setRoute(item.appBundle, $0?.uid) }, matchByName: false)
-        }
-    }
-}
-
-/// Кнопка-меню «куда выводить» в строке (при наведении).
+/// Кнопка «куда выводить» в строке (при наведении). Меню — системное NSMenu: SwiftUI Menu жил внутри кнопки, которая
+/// видна только под мышью, и закрывался сам, как только мышь уходила на меню. NSMenu открывается щелчком, держит
+/// себя само, а пока оно открыто, панель не перерисовывается (таймер опроса ждёт).
 struct RouteMenu: View {
     let item: MediaItem
     @ObservedObject var media: MediaModel
     var body: some View {
-        Menu { RouteMenuItems(item: item, media: media) } label: {
+        Button { RouteNSMenu.show(item, media) } label: {
             Image(systemName: "airplayaudio")
-                .symbolRenderingMode(.monochrome)
-                .renderingMode(.template)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle((item.routeName ?? item.sinkName) != nil ? Color.accentColor : Color.secondary)
+                .frame(width: 24, height: 22)
+                .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .frame(width: 24)
-        .foregroundStyle((item.routeName ?? item.sinkName) != nil ? Color.accentColor : Color.secondary)
+        .buttonStyle(.plain)
         .help(tr("Куда выводить звук", "Where to send the sound", "Kuhu heli saata"))
+    }
+}
+
+/// Пункт меню с замыканием.
+final class MenuAction: NSObject {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
+    @objc func fire() { run() }
+}
+
+@MainActor
+enum RouteNSMenu {
+    private static func item(_ title: String, on: Bool = false, _ run: @escaping () -> Void) -> NSMenuItem {
+        let a = MenuAction(run)
+        let i = NSMenuItem(title: title, action: #selector(MenuAction.fire), keyEquivalent: "")
+        i.target = a
+        i.representedObject = a   // держит замыкание живым, пока живёт пункт
+        i.state = on ? .on : .off
+        return i
+    }
+
+    private static func devices(into m: NSMenu, outputs: [Device], isOn: (Device?) -> Bool, pick: @escaping (Device?) -> Void) {
+        m.addItem(item(tr("Как у всех", "Same as everything", "Nagu kõik"), on: isOn(nil)) { pick(nil) })
+        m.addItem(.separator())
+        for d in outputs { m.addItem(item(d.name, on: isOn(d)) { pick(d) }) }
+    }
+
+    static func build(_ it: MediaItem, _ media: MediaModel) -> NSMenu {
+        let m = NSMenu()
+        m.autoenablesItems = false
+        let route = media.route(it.appBundle)
+        let appPick: (Device?) -> Void = { media.setRoute(it.appBundle, $0?.uid) }
+        let appOn: (Device?) -> Bool = { d in d.map { $0.uid == route } ?? (route == nil) }
+        guard it.isTab else {
+            m.addItem(.sectionHeader(title: tr("Куда выводить \(it.appName)", "Output for \(it.appName)", "\(it.appName) väljund")))
+            devices(into: m, outputs: media.outputs, isOn: appOn, pick: appPick)
+            return m
+        }
+        if it.hasExtension {
+            m.addItem(.sectionHeader(title: tr("Только эта вкладка", "Only this tab", "Ainult see vahekaart")))
+            devices(into: m, outputs: media.outputs, isOn: { d in d.map { $0.name == it.sinkName } ?? (it.sinkName == nil) },
+                    pick: { media.setTabSink(it, $0?.name) })
+        } else {
+            m.addItem(item(tr("Только эта вкладка: поставить «Lark для Chrome»…", "Only this tab: install Lark for Chrome…",
+                              "Ainult see vahekaart: paigalda „Lark Chrome’ile“…")) { ChromeExtension.openInstall() })
+        }
+        m.addItem(.separator())
+        let whole = NSMenuItem(title: tr("Весь \(it.appName)", "All of \(it.appName)", "Kogu \(it.appName)"), action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        devices(into: sub, outputs: media.outputs, isOn: appOn, pick: appPick)
+        whole.submenu = sub
+        m.addItem(whole)
+        return m
+    }
+
+    static func show(_ it: MediaItem, _ media: MediaModel) {
+        build(it, media).popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 }
 
