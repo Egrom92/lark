@@ -96,6 +96,24 @@ MainActor.assumeIsolated {
     MediaRow.showControls = true
     snapshot(PanelView(audio: audio, media: media([spotify, tabYT, zoom])), "\(dir)/panel-controls.png")
     MediaRow.showControls = false
+    // Свой выход у программы и вкладки: Spotify — в AirPods, вкладка YouTube (расширение «Lark для Chrome») и Zoom — в колонку JBL
+    var spotifyRoute = spotify; spotifyRoute.routeName = "AirPods Pro"
+    var tabRoute = tabYT; tabRoute.sinkName = "JBL Flip 6"; tabRoute.hasExtension = true
+    var zoomRoute = zoom; zoomRoute.routeName = "JBL Flip 6"
+    snapshot(PanelView(audio: audio, media: media([spotifyRoute, tabRoute, zoomRoute])), "\(dir)/panel-route.png")
+
+    // Скрыть и заблокировать: BlackHole скрыт (список раскрыт), колонка JBL заблокирована как микрофон, мышь — над AirPods
+    let bh = Device(id: 14, uid: "bh", name: "BlackHole 2ch", transport: kAudioDeviceTransportTypeVirtual)
+    audio.outputs.append(bh)
+    audio.inputs.insert(Device(id: 24, uid: "i4", name: "JBL Flip 6", transport: kAudioDeviceTransportTypeBluetooth), at: 1)
+    audio.inputs.append(bh)
+    audio.hidden = ["bh"]; audio.blockedIn = ["i4"]
+    DeviceRow.previewHover = "o1"; DeviceColumn.previewShowHidden = true
+    snapshot(PanelView(audio: audio, media: media([spotify])), "\(dir)/panel-devices.png")
+    DeviceRow.previewHover = nil; DeviceColumn.previewShowHidden = false
+    audio.outputs.removeLast(); audio.inputs.removeLast(); audio.inputs.remove(at: 1)
+    audio.hidden = []; audio.blockedIn = []
+
     audio.outputs.removeFirst(); audio.inputs.removeFirst()      // AirPods отключены, Lark ждёт их
     UserDefaults.standard.set("i1", forKey: Dir.input.pinKey)
     UserDefaults.standard.set("AirPods Pro", forKey: Dir.input.pinKey + ".name")
