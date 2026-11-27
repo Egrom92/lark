@@ -29,6 +29,14 @@ let devs = [Device(id: 1, uid: "a", name: "A", transport: 0), Device(id: 2, uid:
             Device(id: 3, uid: "c", name: "C", transport: 0)]
 eq(visibleDevices(devs, hidden: ["b"], current: 1).map(\.uid), ["a", "c"], "скрытое не видно")
 eq(visibleDevices(devs, hidden: ["b"], current: 2).map(\.uid), ["a", "b", "c"], "выбранное видно, даже если скрыто")
+let mac = Device(id: 4, uid: "mac", name: "Mac", transport: kAudioDeviceTransportTypeBuiltIn)
+let withMac = devs + [mac]
+eq(replacementDevice(withMac, blocked: ["b"], current: 1, pinned: nil)?.uid, nil, "выбрано незаблокированное — не трогаем")
+eq(replacementDevice(withMac, blocked: ["b"], current: 2, pinned: "c")?.uid, "c", "заблокированное → закреплённое")
+eq(replacementDevice(withMac, blocked: ["b", "c"], current: 2, pinned: "c")?.uid, "mac", "закреплённое тоже заблокировано → встроенное")
+eq(replacementDevice(withMac, blocked: ["b"], current: 2, pinned: "zz")?.uid, "mac", "закреплённое не подключено → встроенное")
+eq(replacementDevice(devs, blocked: ["b"], current: 2, pinned: nil)?.uid, "a", "встроенного нет → первое разрешённое")
+eq(replacementDevice(devs, blocked: ["a", "b", "c"], current: 2, pinned: nil)?.uid, nil, "всё заблокировано — оставить как есть")
 eq(symbol(for: Device(id: 1, uid: "x", name: "AirPods Pro", transport: kAudioDeviceTransportTypeBluetooth), .output), "airpods", "значок AirPods")
 eq(symbol(for: Device(id: 1, uid: "x", name: "Mac", transport: kAudioDeviceTransportTypeBuiltIn), .input), "laptopcomputer", "значок Mac")
 

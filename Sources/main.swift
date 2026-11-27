@@ -135,15 +135,31 @@ final class Keeper {
         }
     }
 
-    /// Выбор пользователя в меню: сделать основным и запомнить.
+    func blocked(_ dir: Dir) -> Set<String> { Set(defaults.stringArray(forKey: dir.blockedKey) ?? []) }
+
+    func setBlocked(_ dir: Dir, _ uid: String, _ on: Bool) {
+        var b = blocked(dir)
+        if on { b.insert(uid) } else { b.remove(uid) }
+        defaults.set(Array(b), forKey: dir.blockedKey)
+        if on { enforce(dir) }   // заблокировали выбранное сейчас — сразу уйти с него
+    }
+
+    /// Выбор пользователя в меню: сделать основным и запомнить. Выбрал заблокированное сам — значит, оно ему нужно: блокировку снять.
     func choose(_ dir: Dir, _ d: Device) {
+        if blocked(dir).contains(d.uid) { setBlocked(dir, d.uid, false) }
         defaults.set(d.uid, forKey: dir.pinKey)
         Audio.setDefault(dir, d.id)
     }
 
-    /// Вернуть закреплённое устройство, если macOS переключила на другое.
+    /// Уйти с заблокированного устройства; вернуть закреплённое, если macOS переключила на другое.
     func enforce(_ dir: Dir) {
-        guard keeps(dir), let uid = pinnedUID(dir),
+        let b = blocked(dir)
+        if !b.isEmpty, let r = replacementDevice(Audio.devices(dir), blocked: b, current: Audio.defaultDevice(dir), pinned: pinnedUID(dir)) {
+            if let p = pinnedUID(dir), b.contains(p) { defaults.set(r.uid, forKey: dir.pinKey) }   // закреплено было заблокированное
+            Audio.setDefault(dir, r.id)
+            return
+        }
+        guard keeps(dir), let uid = pinnedUID(dir), !b.contains(uid),
               let d = Audio.devices(dir).first(where: { $0.uid == uid }),
               Audio.defaultDevice(dir) != d.id else { return }
         Audio.setDefault(dir, d.id)
@@ -173,6 +189,8 @@ final class AudioModel: ObservableObject {
     @Published var keepOut = false
     @Published var keepIn = false
     @Published var hidden: Set<String> = Hidden.uids
+    @Published var blockedOut: Set<String> = []
+    @Published var blockedIn: Set<String> = []
     @Published var loginOn = false
     @Published var presets: [Preset] = Presets.decode(UserDefaults.standard.data(forKey: Presets.key))
     @Published var langTick = 0                  // смена языка — перерисовать панель
@@ -190,6 +208,8 @@ final class AudioModel: ObservableObject {
         keepOut = keeper.keeps(.output)
         keepIn = keeper.keeps(.input)
         hidden = Hidden.uids
+        blockedOut = keeper.blocked(.output)
+        blockedIn = keeper.blocked(.input)
         loginOn = SMAppService.mainApp.status == .enabled
         for dir in [Dir.output, .input] {   // запомнить имя закреплённого, чтобы показать его, когда оно отключено
             if let uid = keeper.pinnedUID(dir), let d = all(dir).first(where: { $0.uid == uid }) {
@@ -236,6 +256,8 @@ final class AudioModel: ObservableObject {
     func toggleKeep(_ dir: Dir) { keeper.setKeeps(dir, !keeper.keeps(dir)); refresh() }
 
     func hide(_ d: Device) { var h = Hidden.uids; h.insert(d.uid); Hidden.set(h); refresh() }
+    func isBlocked(_ dir: Dir, _ d: Device) -> Bool { (dir == .output ? blockedOut : blockedIn).contains(d.uid) }
+    func setBlocked(_ dir: Dir, _ d: Device, _ on: Bool) { keeper.setBlocked(dir, d.uid, on); refresh() }
     func unhideAll() { Hidden.set([]); refresh() }
 
     func missingNote(_ dir: Dir) -> String? {
@@ -955,6 +977,7 @@ struct DeviceColumn: View {
             }
             ForEach(devs, id: \.uid) { d in
                 let sel = d.id == audio.current(dir)
+                let locked = audio.isBlocked(dir, d)
                 Button { audio.choose(dir, d) } label: {
                     HoverRow(selected: sel) {
                         HStack(spacing: 8) {
@@ -963,13 +986,30 @@ struct DeviceColumn: View {
                                 .foregroundStyle(sel ? Color.accentColor : Color.secondary)
                             Text(displayName(d.name, dir)).lineLimit(1).truncationMode(.middle)
                             Spacer(minLength: 0)
+                            if locked { Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(.secondary) }
                             if sel { Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.accentColor) }
                         }
+                        .opacity(locked && !sel ? 0.5 : 1)
                     }
                 }
                 .buttonStyle(.plain)
-                .help(d.name)
+                .help(locked
+                      ? (dir == .output
+                         ? tr("\(d.name): заблокировано — Lark не даст выбрать его выходом автоматически. Щелчок — выбрать и разблокировать",
+                              "\(d.name): blocked — Lark won’t let it become the output automatically. Click to choose and unblock",
+                              "\(d.name): blokeeritud — Lark ei lase seda automaatselt väljundiks valida. Klõps valib ja eemaldab bloki")
+                         : tr("\(d.name): заблокировано — Lark не даст выбрать его микрофоном автоматически. Щелчок — выбрать и разблокировать",
+                              "\(d.name): blocked — Lark won’t let it become the microphone automatically. Click to choose and unblock",
+                              "\(d.name): blokeeritud — Lark ei lase seda automaatselt mikrofoniks valida. Klõps valib ja eemaldab bloki"))
+                      : d.name)
                 .contextMenu {
+                    if locked {
+                        Button(tr("Разблокировать", "Unblock", "Eemalda blokk")) { audio.setBlocked(dir, d, false) }
+                    } else {
+                        Button(dir == .output
+                               ? tr("Заблокировать как выход", "Block as output", "Blokeeri väljundina")
+                               : tr("Заблокировать как микрофон", "Block as microphone", "Blokeeri mikrofonina")) { audio.setBlocked(dir, d, true) }
+                    }
                     if !sel { Button(tr("Скрыть из списка", "Hide from list", "Peida loendist")) { audio.hide(d) } }
                 }
             }

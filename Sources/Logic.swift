@@ -11,6 +11,8 @@ enum Dir {
     }
     var pinKey: String { self == .output ? "pinnedOutputUID" : "pinnedInputUID" }
     var keepKey: String { self == .output ? "keepOutput" : "keepInput" }
+    /// Заблокированные устройства — отдельно для каждой колонки: колонку можно запретить как микрофон, но оставить выходом.
+    var blockedKey: String { self == .output ? "blockedOutputUIDs" : "blockedInputUIDs" }
 }
 
 struct Device: Equatable {
@@ -49,6 +51,16 @@ func symbol(for d: Device, _ dir: Dir) -> String {
 /// Скрытые устройства не показываем, кроме выбранного сейчас (иначе не видно, куда идёт звук).
 func visibleDevices(_ all: [Device], hidden: Set<String>, current: AudioDeviceID) -> [Device] {
     all.filter { !hidden.contains($0.uid) || $0.id == current }
+}
+
+/// macOS выбрала заблокированное устройство — на что переключить вместо него: закреплённое (если подключено и не заблокировано),
+/// иначе встроенное в Mac, иначе первое незаблокированное. nil — выбранное не заблокировано или заменить нечем.
+func replacementDevice(_ all: [Device], blocked: Set<String>, current: AudioDeviceID, pinned: String?) -> Device? {
+    guard let cur = all.first(where: { $0.id == current }), blocked.contains(cur.uid) else { return nil }
+    let allowed = all.filter { !blocked.contains($0.uid) }
+    return allowed.first { $0.uid == pinned }
+        ?? allowed.first { $0.transport == kAudioDeviceTransportTypeBuiltIn }
+        ?? allowed.first
 }
 
 // MARK: - Наборы «выход + микрофон»
