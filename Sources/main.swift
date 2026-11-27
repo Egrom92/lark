@@ -258,7 +258,10 @@ final class AudioModel: ObservableObject {
     func hide(_ d: Device) { var h = Hidden.uids; h.insert(d.uid); Hidden.set(h); refresh() }
     func isBlocked(_ dir: Dir, _ d: Device) -> Bool { (dir == .output ? blockedOut : blockedIn).contains(d.uid) }
     func setBlocked(_ dir: Dir, _ d: Device, _ on: Bool) { keeper.setBlocked(dir, d.uid, on); refresh() }
+    func unhide(_ d: Device) { var h = Hidden.uids; h.remove(d.uid); Hidden.set(h); refresh() }
     func unhideAll() { Hidden.set([]); refresh() }
+    /// Скрытые устройства этой колонки, которые сейчас подключены (выбранное и так видно в списке).
+    func hiddenDevices(_ dir: Dir) -> [Device] { all(dir).filter { hidden.contains($0.uid) && $0.id != current(dir) } }
 
     func missingNote(_ dir: Dir) -> String? {
         guard keeps(dir), let uid = keeper.pinnedUID(dir), !all(dir).contains(where: { $0.uid == uid }) else { return nil }
@@ -916,6 +919,7 @@ struct RowBackground: View {
 
 struct HoverRow<Content: View>: View {
     var selected = false
+    var hovered = false      // нарисовать «под мышью» без мыши (снимки)
     @ViewBuilder var content: () -> Content
     @State private var hover = false
     var body: some View {
@@ -923,15 +927,108 @@ struct HoverRow<Content: View>: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RowBackground(selected: selected, hover: hover))
+            .background(RowBackground(selected: selected, hover: hover || hovered))
             .contentShape(Rectangle())
             .onHover { hover = $0 }
+    }
+}
+
+/// Маленькая кнопка-значок в строке устройства: «скрыть», «заблокировать», «показать».
+struct RowIcon: View {
+    let symbol: String
+    let help: String
+    var active = false
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 20, height: 18)
+                .foregroundStyle(active ? Color.accentColor : (hover ? Color.primary : Color.secondary))
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(hover ? 0.12 : 0)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
+/// Строка устройства. При наведении справа появляются значки «Заблокировать» и «Скрыть» (то же — правым щелчком).
+struct DeviceRow: View {
+    let dir: Dir
+    let d: Device
+    @ObservedObject var audio: AudioModel
+    @State private var hover = false
+    static var previewHover: String?   // снимки для README и сайта: строка с этим UID нарисована «под мышью»
+
+    var body: some View {
+        let sel = d.id == audio.current(dir)
+        let locked = audio.isBlocked(dir, d)
+        let shown = hover || Self.previewHover == d.uid
+        let blockTitle = dir == .output
+            ? tr("Заблокировать как выход: Lark не даст выбрать его автоматически",
+                 "Block as output: Lark won’t let it be chosen automatically",
+                 "Blokeeri väljundina: Lark ei lase seda automaatselt valida")
+            : tr("Заблокировать как микрофон: Lark не даст выбрать его автоматически",
+                 "Block as microphone: Lark won’t let it be chosen automatically",
+                 "Blokeeri mikrofonina: Lark ei lase seda automaatselt valida")
+        let unblockTitle = tr("Разблокировать", "Unblock", "Eemalda blokk")
+        let hideTitle = tr("Скрыть из списка", "Hide from list", "Peida loendist")
+        Button { audio.choose(dir, d) } label: {
+            HoverRow(selected: sel, hovered: Self.previewHover == d.uid) {
+                HStack(spacing: 8) {
+                    Image(systemName: symbol(for: d, dir))
+                        .frame(width: 18)
+                        .foregroundStyle(sel ? Color.accentColor : Color.secondary)
+                    Text(displayName(d.name, dir)).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    if shown {
+                        Color.clear.frame(width: sel ? 20 : 44, height: 1)   // место под значки поверх строки
+                    } else if locked {
+                        Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    if sel { Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.accentColor) }
+                }
+                .opacity(locked && !sel && !shown ? 0.5 : 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .trailing) {
+            if shown {
+                HStack(spacing: 4) {
+                    RowIcon(symbol: locked ? "lock.fill" : "lock.open", help: locked ? unblockTitle : blockTitle, active: locked) {
+                        audio.setBlocked(dir, d, !locked)
+                    }
+                    if !sel { RowIcon(symbol: "eye.slash", help: hideTitle) { audio.hide(d) } }
+                }
+                .padding(.trailing, sel ? 27 : 6)
+            }
+        }
+        .onHover { hover = $0 }
+        .help(locked
+              ? (dir == .output
+                 ? tr("\(d.name): заблокировано — Lark не даст выбрать его выходом автоматически. Щелчок — выбрать и разблокировать",
+                      "\(d.name): blocked — Lark won’t let it become the output automatically. Click to choose and unblock",
+                      "\(d.name): blokeeritud — Lark ei lase seda automaatselt väljundiks valida. Klõps valib ja eemaldab bloki")
+                 : tr("\(d.name): заблокировано — Lark не даст выбрать его микрофоном автоматически. Щелчок — выбрать и разблокировать",
+                      "\(d.name): blocked — Lark won’t let it become the microphone automatically. Click to choose and unblock",
+                      "\(d.name): blokeeritud — Lark ei lase seda automaatselt mikrofoniks valida. Klõps valib ja eemaldab bloki"))
+              : d.name)
+        .contextMenu {
+            Button(locked ? unblockTitle : blockTitle) { audio.setBlocked(dir, d, !locked) }
+            if !sel { Button(hideTitle) { audio.hide(d) } }
+        }
     }
 }
 
 struct DeviceColumn: View {
     let dir: Dir
     @ObservedObject var audio: AudioModel
+    @State private var showHidden = false
+    static var previewShowHidden = false   // снимки: список скрытых раскрыт
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -975,42 +1072,33 @@ struct DeviceColumn: View {
             if devs.isEmpty {
                 Text(tr("Нет устройств", "No devices", "Seadmeid pole")).foregroundStyle(.secondary).padding(.horizontal, 8)
             }
-            ForEach(devs, id: \.uid) { d in
-                let sel = d.id == audio.current(dir)
-                let locked = audio.isBlocked(dir, d)
-                Button { audio.choose(dir, d) } label: {
-                    HoverRow(selected: sel) {
-                        HStack(spacing: 8) {
-                            Image(systemName: symbol(for: d, dir))
-                                .frame(width: 18)
-                                .foregroundStyle(sel ? Color.accentColor : Color.secondary)
-                            Text(displayName(d.name, dir)).lineLimit(1).truncationMode(.middle)
-                            Spacer(minLength: 0)
-                            if locked { Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(.secondary) }
-                            if sel { Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.accentColor) }
-                        }
-                        .opacity(locked && !sel ? 0.5 : 1)
+            ForEach(devs, id: \.uid) { d in DeviceRow(dir: dir, d: d, audio: audio) }
+
+            // Скрытые никуда не делись: свёрнуты здесь, у каждого — кнопка «Показать»
+            let hiddenDevs = audio.hiddenDevices(dir)
+            let expanded = showHidden || Self.previewShowHidden
+            if !hiddenDevs.isEmpty {
+                Button { withAnimation(.easeOut(duration: 0.15)) { showHidden.toggle() } } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
+                        Text(tr("Скрытые: \(hiddenDevs.count)", "Hidden: \(hiddenDevs.count)", "Peidetud: \(hiddenDevs.count)"))
                     }
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(locked
-                      ? (dir == .output
-                         ? tr("\(d.name): заблокировано — Lark не даст выбрать его выходом автоматически. Щелчок — выбрать и разблокировать",
-                              "\(d.name): blocked — Lark won’t let it become the output automatically. Click to choose and unblock",
-                              "\(d.name): blokeeritud — Lark ei lase seda automaatselt väljundiks valida. Klõps valib ja eemaldab bloki")
-                         : tr("\(d.name): заблокировано — Lark не даст выбрать его микрофоном автоматически. Щелчок — выбрать и разблокировать",
-                              "\(d.name): blocked — Lark won’t let it become the microphone automatically. Click to choose and unblock",
-                              "\(d.name): blokeeritud — Lark ei lase seda automaatselt mikrofoniks valida. Klõps valib ja eemaldab bloki"))
-                      : d.name)
-                .contextMenu {
-                    if locked {
-                        Button(tr("Разблокировать", "Unblock", "Eemalda blokk")) { audio.setBlocked(dir, d, false) }
-                    } else {
-                        Button(dir == .output
-                               ? tr("Заблокировать как выход", "Block as output", "Blokeeri väljundina")
-                               : tr("Заблокировать как микрофон", "Block as microphone", "Blokeeri mikrofonina")) { audio.setBlocked(dir, d, true) }
+                if expanded {
+                    ForEach(hiddenDevs, id: \.uid) { d in
+                        HStack(spacing: 8) {
+                            Image(systemName: symbol(for: d, dir)).frame(width: 18).foregroundStyle(.secondary)
+                            Text(displayName(d.name, dir)).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            RowIcon(symbol: "eye", help: tr("Показать в списке", "Show in list", "Näita loendis")) { audio.unhide(d) }
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .help(d.name)
                     }
-                    if !sel { Button(tr("Скрыть из списка", "Hide from list", "Peida loendist")) { audio.hide(d) } }
                 }
             }
 
