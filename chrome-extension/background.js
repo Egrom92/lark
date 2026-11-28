@@ -8,6 +8,20 @@ const MENU = 'lark';
 const SAME = 'lark:default';
 const ALLOW = 'lark:allow';
 
+// --- Журнал: последние 200 событий (chrome.storage.session — живёт, пока открыт Chrome). При ошибке
+// хвост журнала уходит на страницу (data-lark-log), и Lark переписывает его в свой журнал.
+
+const logLines = [];
+function log(msg) {
+  const d = new Date();
+  const line = d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0') + ' ' + msg;
+  logLines.push(line);
+  if (logLines.length > 200) logLines.shift();
+  chrome.storage.session.set({ larkLog: logLines.slice(-200) }).catch(() => {});
+}
+const logTail = (n = 12) => logLines.slice(-n).join(' ⏎ ');
+const errText = (e) => String((e && e.message) || e);
+
 // --- Невидимый документ, который держит захваченный звук вкладок
 
 let creating = null;
@@ -70,6 +84,13 @@ async function tellPage(tabId, label) {
 
 /** Вывести звук вкладки в устройство; deviceId 'default' — вернуть как у всех. */
 async function route(tabId, deviceId, label) {
+  log(`route tab ${tabId} → ${deviceId === 'default' ? 'default' : label || deviceId.slice(0, 8)}`);
+  const res = await routeInner(tabId, deviceId, label).catch((e) => ({ ok: false, error: 'exception: ' + errText(e) }));
+  log(res.ok ? `route tab ${tabId}: ok` : `route tab ${tabId}: FAILED ${res.error}`);
+  return res.ok ? res : { ...res, log: logTail() };
+}
+
+async function routeInner(tabId, deviceId, label) {
   const r = await routes();
   if (deviceId === 'default') {
     await offscreen({ type: 'stop', tabId });
@@ -80,18 +101,20 @@ async function route(tabId, deviceId, label) {
   }
   const has = await offscreen({ type: 'has', tabId });
   if (has && has.has) {
+    log(`tab ${tabId} already captured — changing device`);
     const res = await offscreen({ type: 'sink', tabId, deviceId });
-    if (!res || !res.ok) { lastError = 'sink: ' + ((res && res.error) || '?'); return res || { ok: false }; }
+    if (!res || !res.ok) { lastError = 'sink: ' + ((res && res.error) || 'no answer'); return { ok: false, error: lastError }; }
   } else {
     let streamId;
     try {
       streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+      log(`tab ${tabId}: got stream id`);
     } catch (e) {
-      lastError = 'capture: ' + (e && e.message ? e.message : e);
-      return { ok: false, error: t('cantCapture') + ' ' + (e && e.message ? e.message : '') };
+      lastError = 'capture: ' + errText(e);
+      return { ok: false, error: lastError };
     }
     const res = await offscreen({ type: 'start', tabId, streamId, deviceId });
-    if (!res || !res.ok) { lastError = 'start: ' + ((res && res.error) || '?'); return res || { ok: false }; }
+    if (!res || !res.ok) { lastError = 'start: ' + ((res && res.error) || 'no answer'); return { ok: false, error: lastError }; }
     lastError = '';
   }
   r[tabId] = { deviceId, label };
@@ -172,6 +195,7 @@ chrome.runtime.onStartup.addListener(async () => { await forgetAllRoutes(); inje
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab || tab.id === undefined) return;
+  log(`context menu on tab ${tab.id}: ${info.menuItemId}`);
   const done = async (res) => {   // результат — на страницу: Lark покажет устройство или ошибку
     try { await chrome.tabs.sendMessage(tab.id, { type: 'lark-diag', diag: await diagText() }); } catch (e) {}
     return res;
@@ -190,11 +214,26 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.target === 'offscreen') return false;
   (async () => {
+    try { await handle(msg, sender, reply); } catch (e) {
+      log(`message ${msg.type} crashed: ${errText(e)}`);
+      reply({ ok: false, error: 'exception: ' + errText(e), log: logTail() });
+    }
+  })();
+  return true;
+});
+
+async function handle(msg, sender, reply) {
+  {
     if (msg.type === 'route') return reply(await route(msg.tabId, msg.deviceId, msg.label));
     if (msg.type === 'routeByLabel' && sender.tab) {   // просьба из Lark (через страницу): устройство по названию
+      log(`Lark asks tab ${sender.tab.id} → ${msg.label}`);
       if (msg.label === 'default') return reply(await route(sender.tab.id, 'default', ''));
-      const d = (await devices()).find((x) => x.label === msg.label);
-      if (!d) return reply({ ok: false, error: 'no device ' + msg.label });
+      const list = await devices();
+      const d = list.find((x) => x.label === msg.label);
+      if (!d) {
+        log(`no device "${msg.label}" among: ${list.map((x) => x.label).join(', ') || 'none (no permission?)'}`);
+        return reply({ ok: false, error: 'no device ' + msg.label, log: logTail() });
+      }
       return reply(await route(sender.tab.id, d.deviceId, d.label));
     }
     if (msg.type === 'state') {
@@ -216,10 +255,9 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       await tellPage(msg.tabId, '');
       return reply({ ok: true });
     }
-    reply({ ok: false });
-  })();
-  return true;
-});
+    reply({ ok: false, error: 'unknown message ' + msg.type });
+  }
+}
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const r = await routes();

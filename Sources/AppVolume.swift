@@ -26,7 +26,9 @@ final class AppVolume {
     init?(objs: [AudioObjectID], gain: Float, deviceUID: String? = nil) {
         self.objs = objs
         gainPtr.initialize(to: max(0, min(1, gain)))
-        guard let clock = deviceUID ?? Audio.string(Audio.defaultDevice(.output), kAudioDevicePropertyDeviceUID) else { return nil }
+        guard let clock = deviceUID ?? Audio.string(Audio.defaultDevice(.output), kAudioDevicePropertyDeviceUID) else {
+            Log.error("перехват: не узнать UID текущего выхода"); return nil
+        }
         outputUID = clock
 
         let desc = CATapDescription(stereoMixdownOfProcesses: objs)
@@ -34,7 +36,8 @@ final class AppVolume {
         desc.name = "Lark volume"
         desc.isPrivate = true
         desc.muteBehavior = .muted
-        guard AudioHardwareCreateProcessTap(desc, &tapID) == noErr, tapID != kAudioObjectUnknown else { return nil }
+        guard Log.check(AudioHardwareCreateProcessTap(desc, &tapID), "создать перехват процессов \(objs)") == noErr,
+              tapID != kAudioObjectUnknown else { return nil }
         let agg: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Lark volume",
             kAudioAggregateDeviceUIDKey: AppVolume.uidPrefix + UUID().uuidString,
@@ -44,12 +47,13 @@ final class AppVolume {
             kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: clock]],
             kAudioAggregateDeviceTapListKey: [[kAudioSubTapDriftCompensationKey: true, kAudioSubTapUIDKey: desc.uuid.uuidString]],
         ]
-        guard AudioHardwareCreateAggregateDevice(agg as CFDictionary, &aggID) == noErr else { stop(); return nil }
+        guard Log.check(AudioHardwareCreateAggregateDevice(agg as CFDictionary, &aggID), "создать служебное устройство на \(clock)") == noErr else { stop(); return nil }
         let g = gainPtr
         let st = AudioDeviceCreateIOProcIDWithBlock(&ioProc, aggID, nil) { _, inData, _, outData, _ in
             AppVolume.render(inData, outData, gain: g.pointee)
         }
-        guard st == noErr, AudioDeviceStart(aggID, ioProc) == noErr else { stop(); return nil }
+        guard Log.check(st, "звуковой обработчик перехвата") == noErr,
+              Log.check(AudioDeviceStart(aggID, ioProc), "запустить перехват") == noErr else { stop(); return nil }
     }
 
     /// Звук tap (последний входной поток агрегата: перед ним — входы самого устройства, если есть) → выход, умноженный на gain.

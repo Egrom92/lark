@@ -27,11 +27,22 @@
     if (!want) return;
     root.removeAttribute('data-lark-want');
     let label;
-    try { label = decodeURIComponent(want); } catch (e) { return root.setAttribute('data-lark-error', 'bad request'); }
+    // Итог для Lark: data-lark-result = «ok» или «error: …»; при ошибке — ещё и последние строки журнала расширения.
+    const fail = (why, log) => {
+      root.setAttribute('data-lark-error', why);
+      if (log) root.setAttribute('data-lark-log', log);
+      root.setAttribute('data-lark-result', 'error: ' + why);
+    };
+    try { label = decodeURIComponent(want); } catch (e) { return fail('bad request'); }
     chrome.runtime.sendMessage({ type: 'routeByLabel', label }, (res) => {
-      if (chrome.runtime.lastError) return root.setAttribute('data-lark-error', chrome.runtime.lastError.message);
-      if (res && res.ok) root.removeAttribute('data-lark-error');
-      else root.setAttribute('data-lark-error', (res && res.error) || 'failed');
+      if (chrome.runtime.lastError) return fail('no reply from extension: ' + chrome.runtime.lastError.message);
+      if (res && res.ok) {
+        root.removeAttribute('data-lark-error');
+        root.removeAttribute('data-lark-log');
+        root.setAttribute('data-lark-result', 'ok');
+      } else {
+        fail((res && res.error) || ('empty answer ' + JSON.stringify(res)), res && res.log);
+      }
     });
   };
   new MutationObserver(watch).observe(root, { attributes: true, attributeFilter: ['data-lark-want'] });

@@ -194,7 +194,7 @@ eq(number("missing value"), nil, "не число")
 
 let outs2 = [Device(id: 1, uid: "air", name: "AirPods", transport: 0), Device(id: 2, uid: "jbl", name: "JBL", transport: 0)]
 eq(Routes.target("jbl", outputs: outs2, defaultUID: "air"), "jbl", "своё устройство подключено — туда")
-eq(Routes.target("air", outputs: outs2, defaultUID: "air"), nil, "своё устройство и так текущее — перехват не нужен")
+eq(Routes.target("air", outputs: outs2, defaultUID: "air"), "air", "своё устройство совпало с текущим — всё равно своё (не прыгает при переключении)")
 eq(Routes.target("gone", outputs: outs2, defaultUID: "air"), nil, "устройство отключено — как у всех")
 eq(Routes.target(nil, outputs: outs2, defaultUID: "air"), nil, "без выбора — как у всех")
 check(!Routes.needsTap(muted: false, gain: 1, target: nil), "ничего не меняли — без перехвата")

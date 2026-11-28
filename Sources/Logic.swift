@@ -119,9 +119,11 @@ enum Routes {
 
     static func decode(_ any: Any?) -> [String: String] { (any as? [String: String]) ?? [:] }
 
-    /// В какое устройство выводить сейчас: выбранное, если оно подключено и это не текущий выход; иначе nil — как у всех.
+    /// В какое устройство выводить сейчас: выбранное, если оно подключено; иначе nil — как у всех.
+    /// Совпадает с текущим выходом — всё равно своё: иначе при переключении основного выхода перехват
+    /// убирался и создавался заново, и звук программы на мгновение уходил в новое устройство.
     static func target(_ route: String?, outputs: [Device], defaultUID: String?) -> String? {
-        guard let r = route, r != defaultUID, outputs.contains(where: { $0.uid == r }) else { return nil }
+        guard let r = route, outputs.contains(where: { $0.uid == r }) else { return nil }
         return r
     }
 
