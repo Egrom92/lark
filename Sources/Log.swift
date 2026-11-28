@@ -15,6 +15,9 @@ enum Log {
     private static let os = Logger(subsystem: "local.lark", category: "lark")
     nonisolated(unsafe) private static var handle: FileHandle?
     nonisolated(unsafe) private static var written: UInt64 = 0
+    nonisolated(unsafe) private static var recent: [String] = []   // последние строки — контекст для отчёта об ошибке
+    /// Эти разделы — ошибки: уходят в отчёт разработчику (если он включён, см. Report.swift).
+    static let reported: Set<String> = ["error", "crash", "hang"]
     private static let stamp: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -29,9 +32,23 @@ enum Log {
         let main = Thread.isMainThread ? "" : " ·bg"
         queue.async {
             let line = "\(stamp.string(from: now)) [\(cat)]\(main) \(text)\n"
+            let context = recent
             write(line)
-            if cat == "error" { os.error("\(text, privacy: .public)") }
+            recent.append(String(line.dropLast()))
+            if recent.count > 40 { recent.removeFirst(recent.count - 40) }
+            if reported.contains(cat) {
+                os.error("\(text, privacy: .public)")
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { Telemetry.logged(category: cat, message: text, context: Array(context.suffix(30))) }
+                }
+            }
         }
+    }
+
+    static func describe(_ d: Date) -> String { stamp.string(from: d) }
+    static func describeDay(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .none
+        return f.string(from: d)
     }
 
     static func error(_ msg: @autoclosure () -> String) { put("error", msg()) }
@@ -147,7 +164,10 @@ enum Watchdog {
                 lock.lock(); pong = Date(); lock.unlock()
                 if let s = stallStart {
                     stallStart = nil
-                    Log.put("perf", "главный поток был занят \(Int(Date().timeIntervalSince(s) * 1000)) мс — интерфейс подвисал")
+                    let ms = Int(Date().timeIntervalSince(s) * 1000)
+                    Usage.count("perf.stall"); Usage.measure("perf.stall.ms", Double(ms))
+                    // Дольше 2 с — это уже зависание, о нём стоит знать сразу (раздел hang уходит в отчёт)
+                    Log.put(ms >= 2000 ? "hang" : "perf", "главный поток был занят \(ms) мс — интерфейс подвисал")
                 }
             }
         }

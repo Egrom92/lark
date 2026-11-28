@@ -12,6 +12,8 @@ enum Dir {
     var pinKey: String { self == .output ? "pinnedOutputUID" : "pinnedInputUID" }
     var keepKey: String { self == .output ? "keepOutput" : "keepInput" }
     /// Заблокированные устройства — отдельно для каждой колонки: колонку можно запретить как микрофон, но оставить выходом.
+    /// Имя для счётчиков функций (Report.swift)
+    var usageName: String { self == .output ? "output" : "input" }
     var blockedKey: String { self == .output ? "blockedOutputUIDs" : "blockedInputUIDs" }
 }
 
@@ -210,6 +212,8 @@ struct MediaItem: Identifiable, Equatable {
     var sinkName: String? = nil     // звук вкладки выводится в это устройство (расширение «Lark для Chrome»)
     var hasExtension = false        // во вкладке работает «Lark для Chrome»
 
+    /// Для счётчиков функций: вкладка, плеер или программа (без названий)
+    var usageKind: String { isSoundOnly ? "app" : (isPlayer ? "player" : "tab") }
     var isSoundOnly: Bool { if case .sound = source { return true } else { return false } }
     var isPlayer: Bool { if case .player = source { return true } else { return false } }
     var isTab: Bool { !isSoundOnly && !isPlayer }
@@ -573,3 +577,43 @@ struct StableOrder {
         return items.enumerated().sorted { (rank[$0.element.id] ?? 0, $0.offset) < (rank[$1.element.id] ?? 0, $1.offset) }.map(\.element)
     }
 }
+
+// MARK: - Отчёты разработчику (Report.swift)
+
+/// Названия треков, вкладок и наборов пишутся в журнал в «ёлочках» — наружу они не уходят.
+func scrubTitles(_ s: String) -> String {
+    s.replacingOccurrences(of: "«[^»]*»", with: "«…»", options: .regularExpression)
+}
+
+/// Адрес приёмника отчётов: только https (http — только для localhost, для проверки). Путь …/v1/ingest дописывается сам.
+func reportIngestURL(_ endpoint: String) -> URL? {
+    guard var base = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+          let scheme = base.scheme?.lowercased(), let host = base.host?.lowercased() else { return nil }
+    let local = host == "localhost" || host == "127.0.0.1" || host == "::1"
+    guard scheme == "https" || (scheme == "http" && local) else { return nil }
+    if base.path.hasSuffix("/v1/ingest") { return base }
+    base.appendPathComponent("v1/ingest")
+    return base
+}
+
+/// Тип исключения, причина и верх упавшего потока из отчёта macOS (.ips: строка-заголовок JSON, потом тело JSON).
+func summarizeCrash(_ text: String) -> String {
+    let parts = text.split(separator: "\n", maxSplits: 1)
+    guard parts.count == 2, let body = try? JSONSerialization.jsonObject(with: Data(parts[1].utf8)) as? [String: Any] else {
+        let lines = text.split(separator: "\n").filter { $0.contains("Exception") || $0.contains("Termination") }.prefix(4)
+        return lines.isEmpty ? "нечитаемый отчёт" : lines.joined(separator: "; ")
+    }
+    let exc = body["exception"] as? [String: Any]
+    var s = "\(exc?["type"] as? String ?? "?") \(exc?["signal"] as? String ?? "")".trimmingCharacters(in: .whitespaces)
+    if let asi = body["asi"] as? [String: [String]] {
+        let reason = asi.values.flatMap { $0 }.joined(separator: " | ")
+        if !reason.isEmpty { s += "; \(reason)" }
+    }
+    if let threads = body["threads"] as? [[String: Any]], let ft = body["faultingThread"] as? Int, ft < threads.count,
+       let frames = threads[ft]["frames"] as? [[String: Any]] {
+        let top = frames.prefix(8).compactMap { $0["symbol"] as? String }
+        if !top.isEmpty { s += "; в " + top.joined(separator: " ← ") }
+    }
+    return s
+}
+

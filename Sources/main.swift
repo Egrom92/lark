@@ -289,6 +289,7 @@ final class AudioModel: ObservableObject {
     func visible(_ dir: Dir) -> [Device] { visibleDevices(all(dir), hidden: hidden, current: current(dir)) }
 
     func choose(_ dir: Dir, _ d: Device) {
+        Usage.count("device.choose.\(dir.usageName)")
         keeper.choose(dir, d)
         UserDefaults.standard.set(d.name, forKey: dir.pinKey + ".name")
         refresh()
@@ -306,6 +307,7 @@ final class AudioModel: ObservableObject {
 
     /// Колесо над значком: шаг как у клавиш громкости (1/16) для мыши, плавно для трекпада. Возвращает новую громкость.
     func nudgeOutput(_ delta: Float) -> Float? {
+        Usage.once("volume.wheel")
         guard let v = Audio.volume(Audio.defaultDevice(.output), .output) else { return nil }
         let n = max(0, min(1, v + delta))
         Drag.value("колесо над значком: громкость выхода", Double(n), from: Double(v))
@@ -314,13 +316,16 @@ final class AudioModel: ObservableObject {
         return n
     }
 
-    func toggleKeep(_ dir: Dir) { keeper.setKeeps(dir, !keeper.keeps(dir)); refresh() }
+    func toggleKeep(_ dir: Dir) {
+        Usage.count("keep.\(dir.usageName).\(keeper.keeps(dir) ? "off" : "on")")
+        keeper.setKeeps(dir, !keeper.keeps(dir)); refresh()
+    }
 
-    func hide(_ d: Device) { Log.put("ui", "скрыть устройство \(d.name)"); var h = Hidden.uids; h.insert(d.uid); Hidden.set(h); refresh() }
+    func hide(_ d: Device) { Usage.count("device.hide"); Log.put("ui", "скрыть устройство \(d.name)"); var h = Hidden.uids; h.insert(d.uid); Hidden.set(h); refresh() }
     func isBlocked(_ dir: Dir, _ d: Device) -> Bool { (dir == .output ? blockedOut : blockedIn).contains(d.uid) }
-    func setBlocked(_ dir: Dir, _ d: Device, _ on: Bool) { keeper.setBlocked(dir, d.uid, on); refresh() }
-    func unhide(_ d: Device) { Log.put("ui", "показать устройство \(d.name)"); var h = Hidden.uids; h.remove(d.uid); Hidden.set(h); refresh() }
-    func unhideAll() { Log.put("ui", "показать все скрытые устройства"); Hidden.set([]); refresh() }
+    func setBlocked(_ dir: Dir, _ d: Device, _ on: Bool) { Usage.count("device.\(on ? "block" : "unblock").\(dir.usageName)"); keeper.setBlocked(dir, d.uid, on); refresh() }
+    func unhide(_ d: Device) { Usage.count("device.unhide"); Log.put("ui", "показать устройство \(d.name)"); var h = Hidden.uids; h.remove(d.uid); Hidden.set(h); refresh() }
+    func unhideAll() { Usage.count("device.unhide.all"); Log.put("ui", "показать все скрытые устройства"); Hidden.set([]); refresh() }
     /// Скрытые устройства этой колонки, которые сейчас подключены (выбранное и так видно в списке).
     func hiddenDevices(_ dir: Dir) -> [Device] { all(dir).filter { hidden.contains($0.uid) && $0.id != current(dir) } }
 
@@ -332,6 +337,7 @@ final class AudioModel: ObservableObject {
     }
 
     func toggleLogin() {
+        Usage.count("login.\(SMAppService.mainApp.status == .enabled ? "off" : "on")")
         let on = SMAppService.mainApp.status == .enabled
         Log.put("ui", "запуск при входе: \(on ? "выключить" : "включить")")
         do { if on { try SMAppService.mainApp.unregister() } else { try SMAppService.mainApp.register() } }
@@ -350,6 +356,7 @@ final class AudioModel: ObservableObject {
     func addPreset(_ name: String) {
         let o = currentDevice(.output), i = currentDevice(.input)
         let n = name.trimmingCharacters(in: .whitespaces)
+        Usage.count("preset.add")
         presets.append(Preset(id: UUID().uuidString, name: n.isEmpty ? Presets.defaultName(presets) : n,
                               output: o?.uid, input: i?.uid, outputName: o?.name, inputName: i?.name))
         savePresets()
@@ -357,6 +364,7 @@ final class AudioModel: ObservableObject {
 
     func overwritePreset(_ p: Preset) {
         guard let k = presets.firstIndex(where: { $0.id == p.id }) else { return }
+        Usage.count("preset.overwrite")
         let o = currentDevice(.output), i = currentDevice(.input)
         presets[k].output = o?.uid; presets[k].outputName = o?.name
         presets[k].input = i?.uid; presets[k].inputName = i?.name
@@ -367,14 +375,16 @@ final class AudioModel: ObservableObject {
         let n = name.trimmingCharacters(in: .whitespaces)
         guard !n.isEmpty, let k = presets.firstIndex(where: { $0.id == p.id }) else { return }
         presets[k].name = n
+        Usage.count("preset.rename")
         savePresets()
     }
 
-    func deletePreset(_ p: Preset) { Log.put("ui", "удалить набор «\(p.name)»"); presets.removeAll { $0.id == p.id }; savePresets() }
+    func deletePreset(_ p: Preset) { Usage.count("preset.delete"); Log.put("ui", "удалить набор «\(p.name)»"); presets.removeAll { $0.id == p.id }; savePresets() }
 
     func movePreset(_ p: Preset, by d: Int) {
         guard let k = presets.firstIndex(where: { $0.id == p.id }), presets.indices.contains(k + d) else { return }
         presets.swapAt(k, k + d)
+        Usage.count("preset.move")
         savePresets()
     }
 
@@ -383,6 +393,8 @@ final class AudioModel: ObservableObject {
     func applyPreset(_ p: Preset) -> [String] {
         refresh()
         let missing = Presets.missing(p, outputs: outputs, inputs: inputs)
+        Usage.count("preset.apply")
+        if !missing.isEmpty { Usage.count("preset.apply.missing") }
         Log.put("ui", "включить набор «\(p.name)»\(missing.isEmpty ? "" : ", не подключено: " + missing.joined(separator: ", "))")
         if let o = p.output, let d = outputs.first(where: { $0.uid == o }) { keeper.choose(.output, d) }
         if let i = p.input, let d = inputs.first(where: { $0.uid == i }) { keeper.choose(.input, d) }
@@ -657,6 +669,12 @@ final class MediaModel: ObservableObject {
 
     /// Действие над строкой: сразу показываем результат, потом шлём программе и перепроверяем.
     func perform(_ item: MediaItem, _ a: MediaAction) {
+        switch a {
+        case .seek: Usage.count("media.seek.\(item.usageKind)")
+        case .skip: Usage.count("media.skip10.\(item.usageKind)")
+        case .next, .previous: Usage.count("media.next.\(item.usageKind)")
+        default: break
+        }
         if item.isSoundOnly {
             switch a {
             case .volume(let v): setAppGain(item.appBundle, v)
@@ -682,12 +700,14 @@ final class MediaModel: ObservableObject {
     }
 
     func toggle(_ item: MediaItem) {
+        if !item.isSoundOnly { Usage.count("media.\(item.playing ? "pause" : "play").\(item.usageKind)") }
         Log.put("ui", "кнопка ▶︎/⏸/🔇 у \(item.logName) (сейчас: \(item.isSoundOnly ? (item.muted ? "без звука" : "со звуком") : (item.playing ? "играет" : "пауза")))")
         perform(item, item.isSoundOnly ? .pause : (item.playing ? .pause : .play)) }
 
     /// Ползунок громкости строки: сразу на экране и сразу программе, пока рука ещё двигает ползунок.
     /// Скрипт идёт ~0.1 с: пока он идёт, новые значения не копятся — отправляется только последнее.
     func setVolume(_ item: MediaItem, _ v: Double) {
+        Usage.once("media.volume.\(item.usageKind)")
         Drag.value("громкость строки \(item.logName)", v, from: items.first { $0.id == item.id }?.volume ?? item.volume)
         if item.isSoundOnly { setAppGain(item.appBundle, v); return }
         generation += 1
@@ -770,6 +790,7 @@ final class MediaModel: ObservableObject {
     /// Куда выводить звук программы: UID устройства или nil — как у всех. Запоминается.
     func setRoute(_ b: String, _ uid: String?) {
         let t0 = Date()
+        Usage.count(uid == nil ? "route.app.clear" : "route.app.set")
         Log.put("route", "\(b): выводить в \(uid.flatMap { u in outputs.first { $0.uid == u }?.name } ?? "как у всех")")
         routes[b] = uid
         UserDefaults.standard.set(routes, forKey: Routes.key)
@@ -789,6 +810,7 @@ final class MediaModel: ObservableObject {
     /// Вывести одну вкладку в устройство через «Lark для Chrome». Ответ расширения (data-lark-result) ждём до 3 с.
     /// Не вышло — подсказка в панели держится, пока не получится или панель не закроют (опрос её не стирает).
     func setTabSink(_ item: MediaItem, _ deviceName: String?) {
+        Usage.count(deviceName == nil ? "route.tab.clear" : "route.tab.set")
         Log.put("route", "\(item.logName): только эта вкладка → \(deviceName ?? "как у всех") (через «Lark для Chrome»)")
         let before = item.sinkName
         update(item.id) { $0.sinkName = deviceName }
@@ -897,6 +919,7 @@ final class MediaModel: ObservableObject {
     /// Выключить или вернуть звук программы, которой нельзя поставить паузу.
     func toggleMute(_ item: MediaItem) {
         let b = item.appBundle
+        Usage.count(muted.contains(b) ? "media.unmute" : "media.mute")
         Log.put("ui", "\(muted.contains(b) ? "вернуть звук" : "выключить звук") у \(item.logName)")
         if muted.contains(b) { muted.remove(b) } else { muted.insert(b) }
         if !applyTap(b) { Log.error("\(b): «без звука» не применилось"); muted.remove(b) }
@@ -932,6 +955,7 @@ final class MediaModel: ObservableObject {
 
     /// Пауза (или «без звука») на всём остальном, играет только это.
     func solo(_ item: MediaItem) {
+        Usage.count("media.solo")
         Log.put("ui", "«Играть только это»: \(item.logName)")
         for o in items where o.playing && o.id != item.id { o.isSoundOnly ? toggleMute(o) : perform(o, .pause) }
         if item.isSoundOnly { if item.muted { toggleMute(item) } } else if !item.playing { perform(item, .play) }
@@ -941,6 +965,7 @@ final class MediaModel: ObservableObject {
     private var pausedByAll: [MediaItem] = []
     func pauseAll() {
         let playing = items.filter(\.playing)
+        Usage.count(playing.isEmpty ? "media.resume.all" : "media.pause.all")
         Log.put("ui", playing.isEmpty ? "«Вернуть всё»: \(pausedByAll.map(\.logName).joined(separator: ", "))"
                                       : "«Пауза везде»: \(playing.map(\.logName).joined(separator: ", "))")
         if playing.isEmpty {
@@ -957,6 +982,7 @@ final class MediaModel: ObservableObject {
     var canResumeAll: Bool { !anyPlaying && !pausedByAll.isEmpty }
 
     func reveal(_ item: MediaItem) {
+        Usage.count("media.reveal.\(item.usageKind)")
         Log.put("ui", "двойной щелчок — открыть \(item.logName)")
         onReveal()
         actions.async { MediaProbe.reveal(item) }
@@ -1841,6 +1867,7 @@ struct MediaSection: View {
 struct PanelView: View {
     @ObservedObject var audio: AudioModel
     @ObservedObject var media: MediaModel
+    @ObservedObject var option = OptionKey.shared
     var onLanguage: (Lang?) -> Void = { _ in }
     var onCheckUpdate: () -> Void = {}
     var onUpdate: () -> Void = {}
@@ -1886,13 +1913,20 @@ struct PanelView: View {
                         }
                     }
                     Button(tr("Lark для Chrome: звук отдельной вкладки…", "Lark for Chrome: sound of a single tab…", "Lark Chrome’ile: ühe vahekaardi heli…")) {
+                        Usage.count("chrome.extension.install")
                         ChromeExtension.openInstall()
                     }
                     if !audio.hidden.isEmpty {
                         Button(tr("Показать скрытые устройства (\(audio.hidden.count))", "Show hidden devices (\(audio.hidden.count))",
                                   "Näita peidetud seadmeid (\(audio.hidden.count))")) { audio.unhideAll() }
                     }
+                    if option.down || Telemetry.enabled || !Telemetry.endpoint.isEmpty {
+                        Button(tr("Отчёты на свой сервер…", "Reports to your own server…", "Aruanded oma serverisse…")) {
+                            DispatchQueue.main.async { MainActor.assumeIsolated { ReportsDialog.show() } }
+                        }
+                    }
                     Button(tr("Показать журнал Lark", "Show Lark log", "Näita Larki logi")) {
+                        Usage.count("log.reveal")
                         Log.put("ui", "«Показать журнал»")
                         Log.reveal()
                     }
@@ -2007,6 +2041,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         logSession()
+        CrashWatch.start()
+        Usage.count("app.launch")
+        OptionKey.shared.start()
+        Telemetry.start()
         Watchdog.start { [weak self] in self?.popover.isShown ?? false }
         let nc = NotificationCenter.default
         nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
@@ -2129,8 +2167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func makePanel() {
         let view = PanelView(audio: audio, media: media,
-                             onLanguage: { [weak self] l in self?.setLanguage(l) },
-                             onCheckUpdate: { [weak self] in self?.checkUpdate(force: true, report: true) },
+                             onLanguage: { [weak self] l in Usage.count("language.\(l?.rawValue ?? "system")"); self?.setLanguage(l) },
+                             onCheckUpdate: { [weak self] in Usage.count("update.check"); self?.checkUpdate(force: true, report: true) },
                              onUpdate: { [weak self] in self?.runUpdate() })
         let host = NSHostingController(rootView: view)
         host.sizingOptions = .preferredContentSize
@@ -2163,6 +2201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func runUpdate() {
+        Usage.count("update.install")
         Log.put("ui", "«Обновить» — запускаю установщик (журнал: ~/Library/Logs/Lark-update.log)")
         Log.flush()
         audio.updateNote = tr("Обновляю… Lark перезапустится сам", "Updating… Lark will restart", "Uuendan… Lark käivitub uuesti")
@@ -2179,6 +2218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let list = audio.presets.prefix(Presets.maxHotkeys).map { p in
             { [weak self] in
                 guard let self else { return }
+                Usage.count("preset.hotkey")
                 Log.put("ui", "сочетание клавиш для набора «\(p.name)»")
                 let missing = self.audio.applyPreset(p)
                 self.flash(missing.isEmpty ? p.name : "\(p.name): " + tr("нет ", "missing ", "puudub ") + missing.joined(separator: ", "))
@@ -2219,6 +2259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
         Log.put("panel", "панель открыта за \(Log.ms(openedAt))")
+        Usage.count("panel.open"); Usage.measure("panel.open.ms", Date().timeIntervalSince(openedAt) * 1000)
         // Щелчок мимо панели (в другой программе, на рабочем столе, в строке меню) — закрыть.
         outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] e in
             MainActor.assumeIsolated {
@@ -2263,6 +2304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         Log.put("app", "════ Lark закрывается")
         media.unmuteAll()
+        Usage.save()
+        CrashWatch.cleanExit()
         Log.flush()
     }
 

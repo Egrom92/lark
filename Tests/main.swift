@@ -40,6 +40,23 @@ eq(replacementDevice(devs, blocked: ["a", "b", "c"], current: 2, pinned: nil)?.u
 eq(symbol(for: Device(id: 1, uid: "x", name: "AirPods Pro", transport: kAudioDeviceTransportTypeBluetooth), .output), "airpods", "значок AirPods")
 eq(symbol(for: Device(id: 1, uid: "x", name: "Mac", transport: kAudioDeviceTransportTypeBuiltIn), .input), "laptopcomputer", "значок Mac")
 
+// MARK: - Отчёты разработчику
+
+eq(scrubTitles("[ui] навели на строку Chrome [вкладка w1/t2] «Глава Instagram: кого нанимают» и «MISS U»"),
+   "[ui] навели на строку Chrome [вкладка w1/t2] «…» и «…»", "названия в ёлочках вырезаны")
+eq(scrubTitles("macOS: основной микрофон теперь MacBook Air"), "macOS: основной микрофон теперь MacBook Air", "без ёлочек — как было")
+eq(reportIngestURL("https://lark.example.com")?.absoluteString, "https://lark.example.com/v1/ingest", "путь приёмника дописан")
+eq(reportIngestURL(" https://h.ee/x/v1/ingest ")?.absoluteString, "https://h.ee/x/v1/ingest", "готовый путь не удваивается")
+eq(reportIngestURL("http://lark.example.com")?.absoluteString, nil, "http наружу — нельзя")
+eq(reportIngestURL("http://127.0.0.1:8788")?.absoluteString, "http://127.0.0.1:8788/v1/ingest", "http для localhost — можно")
+eq(reportIngestURL("lark.example.com")?.absoluteString, nil, "без схемы — нет")
+let ips = #"{"app_name":"Lark","bug_type":"309"}"# + "\n" + #"""
+{"exception":{"type":"EXC_BAD_ACCESS","signal":"SIGSEGV"},"asi":{"libsystem_c.dylib":["abort() called"]},
+ "faultingThread":0,"threads":[{"frames":[{"symbol":"AppVolume.start()"},{"symbol":"MediaModel.applyTap(_:)"}]}]}
+"""#.replacingOccurrences(of: "\n ", with: " ")
+eq(summarizeCrash(ips), "EXC_BAD_ACCESS SIGSEGV; abort() called; в AppVolume.start() ← MediaModel.applyTap(_:)", "сводка отчёта о падении")
+eq(summarizeCrash("мусор"), "нечитаемый отчёт", "нечитаемый отчёт о падении")
+
 // MARK: - Порядок строк
 
 func item(_ id: String, _ playing: Bool, bundle: String = "b") -> MediaItem {
